@@ -1,0 +1,5 @@
+dist/
+jnl-go
+*.exe
+jnl-linux-*
+jnl-macos-*

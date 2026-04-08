@@ -1,0 +1,909 @@
+#!/usr/bin/env bash
+# jnl — a terminal journaling toolkit
+#
+# Usage:
+#   jnl                    append a new draft to the inbox
+#   jnl "Title"            new draft with title pre-filled
+#   jnl review             work through inbox drafts one by one
+#   jnl inbox              view inbox contents (read-only)
+#   jnl log [date]         open today's (or a specific) journal entry
+#   jnl yesterday          open yesterday's journal entry
+#   jnl list               list all journal entries with word counts
+#   jnl stats              writing stats (streak, totals, per-year, day-of-week)
+#   jnl search <term>      search all journal entries and inbox
+#   jnl tags               list all @tags with counts
+#   jnl tag <name>         show all entries tagged @name
+#   jnl random             display a random past journal entry
+#   jnl cleanup            standardise formatting + reorder entries by timestamp
+#   jnl export [file]      combine all entries into one file (default: export.md)
+#   jnl open               open journal folder in file explorer
+#   jnl help               show this help
+#
+# Install:
+#   cp jnl ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
+#
+# Config (set in ~/.bashrc or ~/.zshrc):
+#   JNL_DIR   — notes directory (default: ~/notes)
+#   EDITOR    — text editor    (default: micro)
+
+# ── config ────────────────────────────────────────────────────────────────────
+
+NOTES_DIR="${JNL_DIR:-$HOME/notes}"
+INBOX="$NOTES_DIR/inbox.md"
+JOURNAL_DIR="$NOTES_DIR/journal"
+EDITOR="${EDITOR:-micro}"
+
+mkdir -p "$JOURNAL_DIR"
+
+# ── platform detection ────────────────────────────────────────────────────────
+
+_OS="$(uname -s)"   # Linux | Darwin
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+now_ts()   { date '+%Y-%m-%d %H:%M:%S'; }
+now_date() { date '+%Y-%m-%d'; }
+
+yesterday_date() {
+    if [[ "$_OS" == "Darwin" ]]; then
+        date -v-1d '+%Y-%m-%d'
+    else
+        date -d yesterday '+%Y-%m-%d'
+    fi
+}
+
+# date_offset BASE_DATE OFFSET  (OFFSET is a signed integer, e.g. +1 or -1)
+date_offset() {
+    local base="$1" offset="$2"
+    if [[ "$_OS" == "Darwin" ]]; then
+        date -v"${offset}d" -j -f '%Y-%m-%d' "$base" '+%Y-%m-%d' 2>/dev/null
+    else
+        date -d "$base $offset days" '+%Y-%m-%d' 2>/dev/null
+    fi
+}
+
+# date_fmt BASE_DATE FORMAT  (strftime format string)
+date_fmt() {
+    local base="$1" fmt="$2"
+    if [[ "$_OS" == "Darwin" ]]; then
+        date -j -f '%Y-%m-%d' "$base" "$fmt" 2>/dev/null
+    else
+        date -d "$base" "$fmt" 2>/dev/null
+    fi
+}
+
+# Open a directory in the system file manager
+open_folder() {
+    local dir="$1"
+    if [[ "$_OS" == "Darwin" ]]; then
+        open "$dir" 2>/dev/null
+    elif command -v xdg-open &>/dev/null && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        xdg-open "$dir" 2>/dev/null &
+    else
+        echo "  $dir"
+    fi
+}
+
+wc_file() { [ -f "$1" ] && wc -w < "$1" || echo 0; }
+
+journal_file() {
+    local y m d
+    IFS=- read -r y m d <<< "$1"
+    echo "$JOURNAL_DIR/$y/$m/$d.md"
+}
+
+file_to_date() {
+    local d m y
+    d=$(basename "$1" .md)
+    m=$(basename "$(dirname "$1")")
+    y=$(basename "$(dirname "$(dirname "$1")")")
+    echo "$y-$m-$d"
+}
+
+open_in_editor() {
+    if [[ "$EDITOR" == *micro* ]]; then
+        micro +99999 "$1"
+    else
+        $EDITOR "$1"
+    fi
+}
+
+entry_count() {
+    [ -f "$1" ] && grep -c '^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] ' "$1" 2>/dev/null || echo 0
+}
+
+count_drafts() {
+    [ ! -s "$INBOX" ] && echo 0 && return
+    grep -c '^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] ' "$INBOX" 2>/dev/null || echo 0
+}
+
+# Split inbox into numbered temp files; echo tmpdir path
+split_inbox() {
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/jnl_review.XXXXXX)
+    [ ! -s "$INBOX" ] && echo "$tmpdir" && return
+
+    local idx=1 buf="" date_re='^\[[0-9]{4}-[0-9]{2}-[0-9]{2} '
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ $date_re ]] && [ -n "$(echo "$buf" | tr -d '[:space:]')" ]; then
+            printf '%s' "$buf" > "$tmpdir/$(printf '%04d' $idx).md"
+            idx=$((idx + 1))
+            buf=""
+        fi
+        buf="${buf}${line}"$'\n'
+    done < "$INBOX"
+
+    if [ -n "$(echo "$buf" | tr -d '[:space:]')" ]; then
+        printf '%s' "$buf" > "$tmpdir/$(printf '%04d' $idx).md"
+    fi
+
+    echo "$tmpdir"
+}
+
+# Rebuild inbox from remaining draft files in tmpdir
+rebuild_inbox() {
+    local tmpdir="$1"
+    local files=("$tmpdir"/*.md)
+    > "$INBOX"
+    local first=true
+    for f in "${files[@]}"; do
+        [ -f "$f" ] || continue
+        [ "$first" = true ] && first=false || printf '\n' >> "$INBOX"
+        cat "$f" >> "$INBOX"
+    done
+}
+
+draft_date()   { grep -m1 '^\[[0-9][0-9][0-9][0-9]-' "$1" | sed 's/\[\([0-9-]*\).*/\1/'; }
+draft_ts()     { grep -m1 '^\[[0-9][0-9][0-9][0-9]-' "$1" | sed 's/\[\([^]]*\)\]/\1/'; }
+draft_suffix() { grep -m1 '^\[[0-9][0-9][0-9][0-9]-' "$1" | sed 's/^\[[^]]*\] \{0,1\}//'; }
+draft_body()   { tail -n +2 "$1" | sed '/^[[:space:]]*$/{ /./!d; }'; }
+
+file_one_draft() {
+    local f="$1"
+    local date ts body jfile suffix
+    date=$(draft_date "$f")
+    ts=$(draft_ts "$f")
+    [ -z "$date" ] && date=$(now_date) && ts=$(now_ts)
+    body=$(draft_body "$f")
+    [ -z "$(echo "$body" | tr -d '[:space:]')" ] && echo "  Nothing to file." && return 1
+
+    jfile=$(journal_file "$date")
+    mkdir -p "$(dirname "$jfile")"
+    suffix=$(draft_suffix "$f")
+    [ -s "$jfile" ] && printf '\n' >> "$jfile"
+    if [ -n "$suffix" ]; then
+        printf '[%s] %s\n%s\n' "$ts" "$suffix" "$body" >> "$jfile"
+    else
+        printf '[%s]\n%s\n' "$ts" "$body" >> "$jfile"
+    fi
+    echo "  → $date.md"
+}
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+cmd_new() {
+    local title="$1"
+    local count
+    count=$(count_drafts)
+    [ -s "$INBOX" ] && echo "  Inbox: $count draft(s) waiting." || echo "  Inbox: empty."
+
+    local tmp
+    tmp=$(mktemp /tmp/jnl_new.XXXXXX)
+
+    if [ -n "$title" ]; then
+        printf '[%s] %s\n' "$(now_ts)" "$title" > "$tmp"
+    else
+        printf '[%s]\n' "$(now_ts)" > "$tmp"
+    fi
+
+    open_in_editor "$tmp"
+
+    local body
+    body=$(draft_body "$tmp")
+    if [ -z "$(echo "$body" | tr -d '[:space:]')" ]; then
+        echo "  Nothing written — discarded."
+        rm "$tmp"
+        return
+    fi
+
+    # Normalise trailing newlines — editors may add extras; ensure exactly one
+    printf '%s\n' "$(< "$tmp")" > "${tmp}.n" && mv "${tmp}.n" "$tmp"
+
+    [ -s "$INBOX" ] && printf '\n' >> "$INBOX"
+    cat "$tmp" >> "$INBOX"
+    rm "$tmp"
+
+    local new_count
+    new_count=$(count_drafts)
+    echo "  Draft saved. Inbox: $new_count draft(s)."
+}
+
+cmd_review() {
+    if [ ! -s "$INBOX" ]; then
+        echo "  Inbox is empty — nothing to review."
+        return
+    fi
+
+    local tmpdir
+    tmpdir=$(split_inbox)
+
+    local filed=0 deleted=0 idx=0
+
+    while true; do
+        local real_files=()
+        for f in "$tmpdir"/*.md; do
+            [ -f "$f" ] && real_files+=("$f")
+        done
+        local total=${#real_files[@]}
+
+        [ "$total" -eq 0 ] && break
+        [ "$idx" -ge "$total" ] && idx=$((total - 1))
+        [ "$idx" -lt 0 ]       && idx=0
+
+        local f="${real_files[$idx]}"
+        local ts body wc
+        ts=$(draft_ts "$f")
+        body=$(draft_body "$f")
+        wc=$(echo "$body" | wc -w)
+
+        clear
+        printf '\n  ─── Draft %d of %d' "$((idx + 1))" "$total"
+        [ -n "$ts" ] && printf '  ·  %s' "$ts"
+        printf '  ·  %d words ───\n\n' "$wc"
+        echo "$body" | head -25 | while IFS= read -r line; do printf '  %s\n' "$line"; done
+        echo ""
+        printf '  ↑/↓ navigate  [f]ile  [e]dit  [d]elete  [q]uit\n  > '
+
+        local key seq
+        IFS= read -rsn1 key </dev/tty
+        if [[ $key == $'\x1b' ]]; then
+            IFS= read -rsn2 seq </dev/tty
+            case "$seq" in
+                '[A') idx=$((idx - 1)); [ "$idx" -lt 0 ] && idx=$((total - 1)); continue ;;
+                '[B') idx=$((idx + 1)); [ "$idx" -ge "$total" ] && idx=0;        continue ;;
+            esac
+            continue
+        fi
+        echo ""
+
+        case "$key" in
+            f|F)
+                file_one_draft "$f"
+                rm "$f"
+                filed=$((filed + 1))
+                ;;
+            e|E)
+                open_in_editor "$f" </dev/tty
+                ;;
+            d|D)
+                printf '  Delete this draft? [y/N] '
+                IFS= read -r confirm </dev/tty
+                if [[ "$confirm" =~ ^[yY]$ ]]; then
+                    rm "$f"
+                    deleted=$((deleted + 1))
+                    echo "  Deleted."
+                fi
+                ;;
+            q|Q)
+                echo "  Stopped."
+                break
+                ;;
+        esac
+    done
+
+    rebuild_inbox "$tmpdir"
+    rm -rf "$tmpdir"
+
+    local remaining
+    remaining=$(count_drafts)
+    [ ! -s "$INBOX" ] && remaining=0
+
+    echo ""
+    echo "  ── Done ─────────────────"
+    printf '  Filed:     %d\n' "$filed"
+    printf '  Deleted:   %d\n' "$deleted"
+    printf '  Remaining: %d\n' "$remaining"
+    echo ""
+}
+
+cmd_browse() {
+    if [ -z "$(find "$JOURNAL_DIR" -name "*.md" -type f -print -quit 2>/dev/null)" ]; then
+        echo "  No journal entries yet."
+        return
+    fi
+
+    local level="year" sel_year="" sel_month="" idx=0 filter=""
+
+    while true; do
+        local items=()
+        case "$level" in
+            year)
+                for f in "$JOURNAL_DIR"/*/; do
+                    [ -d "$f" ] && items+=("$(basename "$f")")
+                done
+                IFS=$'\n' items=($(printf '%s\n' "${items[@]}" | sort -rn))
+                ;;
+            month)
+                for f in "$JOURNAL_DIR"/$sel_year/*/; do
+                    [ -d "$f" ] && items+=("$(basename "$f")")
+                done
+                IFS=$'\n' items=($(printf '%s\n' "${items[@]}" | sort -rn))
+                ;;
+            day)
+                for f in "$JOURNAL_DIR"/$sel_year/$sel_month/*.md; do
+                    [ -f "$f" ] && items+=("$(basename "$f" .md)")
+                done
+                IFS=$'\n' items=($(printf '%s\n' "${items[@]}" | sort -rn))
+                ;;
+        esac
+
+        local filtered=()
+        if [ -n "$filter" ]; then
+            for item in "${items[@]}"; do
+                [[ "$item" == ${filter}* ]] && filtered+=("$item")
+            done
+            [ "${#filtered[@]}" -eq 0 ] && filter="${filter%?}" && continue
+        else
+            filtered=("${items[@]}")
+        fi
+
+        [ "$idx" -ge "${#filtered[@]}" ] && idx=$((${#filtered[@]} - 1))
+        [ "$idx" -lt 0 ] && idx=0
+
+        clear
+        case "$level" in
+            year)  printf '\n  ── Journal ──────────────────────────\n\n' ;;
+            month) printf '\n  ── %s ───────────────────────────────\n\n' "$sel_year" ;;
+            day)
+                local mname
+                mname=$(date_fmt "${sel_year}-${sel_month}-01" '+%B')
+                printf '\n  ── %s / %s ──────────────────────────\n\n' "$sel_year" "$mname"
+                ;;
+        esac
+
+        local i=0
+        for item in "${filtered[@]}"; do
+            local label
+            case "$level" in
+                year)
+                    local ycount
+                    ycount=$(find "$JOURNAL_DIR"/$item -name "*.md" -type f 2>/dev/null | wc -l)
+                    label="${item}  (${ycount} day(s))"
+                    ;;
+                month)
+                    local mlab mcount
+                    mlab=$(date_fmt "${sel_year}-${item}-01" '+%B')
+                    mcount=$(find "$JOURNAL_DIR"/$sel_year/$item -name "*.md" -type f 2>/dev/null | wc -l)
+                    label="${mlab}  (${mcount} day(s))"
+                    ;;
+                day)
+                    local date_str jfile dow ec wc
+                    date_str="${sel_year}-${sel_month}-${item}"
+                    jfile=$(journal_file "$date_str")
+                    dow=$(date_fmt "$date_str" '+%a')
+                    ec=$(entry_count "$jfile")
+                    wc=$(wc_file "$jfile")
+                    label="${item}  ${dow}  —  ${ec} $([ "$ec" -eq 1 ] && echo 'entry' || echo 'entries'), ${wc} words"
+                    ;;
+            esac
+
+            if [ "$i" -eq "$idx" ]; then
+                printf '  ▶ %s\n' "$label"
+            else
+                printf '    %s\n' "$label"
+            fi
+            i=$((i + 1))
+        done
+
+        echo ""
+        [ -n "$filter" ] && printf '  Filter: %s\n' "$filter"
+        case "$level" in
+            year)  printf '  ↑/↓ navigate  Enter select  q quit\n  > ' ;;
+            month) printf '  ↑/↓ navigate  Enter select  ← back  q quit\n  > ' ;;
+            day)   printf '  ↑/↓ navigate  Enter view  ← back  q quit\n  > ' ;;
+        esac
+
+        local key seq
+        IFS= read -rsn1 key </dev/tty
+        if [[ $key == $'\x1b' ]]; then
+            IFS= read -rsn2 seq </dev/tty
+            case "$seq" in
+                '[A') filter=""; idx=$((idx - 1)); [ "$idx" -lt 0 ] && idx=$((${#filtered[@]} - 1)) ;;
+                '[B') filter=""; idx=$((idx + 1)); [ "$idx" -ge "${#filtered[@]}" ] && idx=0 ;;
+                '[D')
+                    case "$level" in
+                        month) level="year";  sel_year="";  idx=0; filter="" ;;
+                        day)   level="month"; sel_month=""; idx=0; filter="" ;;
+                    esac
+                    ;;
+            esac
+            continue
+        fi
+
+        case "$key" in
+            '')
+                local selected="${filtered[$idx]}"
+                case "$level" in
+                    year)  sel_year="$selected";  level="month"; idx=0; filter="" ;;
+                    month) sel_month="$selected"; level="day";   idx=0; filter="" ;;
+                    day)
+                        echo ""
+                        cmd_log "${sel_year}-${sel_month}-${filtered[$idx]}"
+                        printf '  Press any key to continue...'
+                        IFS= read -rsn1 </dev/tty
+                        ;;
+                esac
+                ;;
+            $'\x7f'|$'\x08')
+                if [ -n "$filter" ]; then
+                    filter="${filter%?}"; idx=0
+                else
+                    case "$level" in
+                        month) level="year";  sel_year="";  idx=0 ;;
+                        day)   level="month"; sel_month=""; idx=0 ;;
+                        year)  break ;;
+                    esac
+                fi
+                ;;
+            [0-9]) filter="${filter}${key}"; idx=0 ;;
+            q|Q)   break ;;
+        esac
+    done
+    clear
+}
+
+cmd_inbox() {
+    if [ ! -s "$INBOX" ]; then
+        echo "  Inbox is empty."
+        return
+    fi
+    local count
+    count=$(count_drafts)
+    echo ""
+    echo "  ── Inbox: $count draft(s) ──────────────"
+    while IFS= read -r line; do printf '  %s\n' "$line"; done < "$INBOX"
+    echo ""
+}
+
+cmd_log() {
+    local date="${1:-$(now_date)}"
+    local jfile
+    jfile=$(journal_file "$date")
+
+    if [ ! -f "$jfile" ]; then
+        echo "  No entries for $date."
+        return
+    fi
+
+    local ec wc
+    ec=$(entry_count "$jfile")
+    wc=$(wc_file "$jfile")
+    echo ""
+    echo "  $date — $ec $([ "$ec" -eq 1 ] && echo 'entry' || echo 'entries'), $wc words"
+    echo "  ──────────────────────────────"
+    while IFS= read -r line; do printf '  %s\n' "$line"; done < "$jfile"
+    echo ""
+}
+
+cmd_yesterday() { cmd_log "$(yesterday_date)"; }
+
+cmd_list() {
+    echo ""
+    local count=0 total_words=0
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort -r); do
+        [ -f "$f" ] || continue
+        local date_str ec wc
+        date_str=$(file_to_date "$f")
+        ec=$(entry_count "$f")
+        wc=$(wc_file "$f")
+        total_words=$((total_words + wc))
+        printf '  %-14s  %2d entries  %4d words\n' "$date_str" "$ec" "$wc"
+        count=$((count + 1))
+    done
+    [ "$count" -eq 0 ] && echo "  No journal entries yet." && echo "" && return
+    echo "  ───────────────────────────────────"
+    printf '  %d days  ·  %d words total\n' "$count" "$total_words"
+    echo ""
+}
+
+cmd_stats() {
+    echo ""
+    echo "  Writing stats"
+    echo "  ─────────────────────────────────────────────────"
+
+    local total_words=0 total_entries=0
+    local longest_wc=0 longest_date=""
+    local busiest_ec=0 busiest_date=""
+    local streak=0 streak_start=""
+    local max_streak=0 max_streak_start="" max_streak_end=""
+    local prev_date=""
+    local all_dates=()
+
+    declare -A year_entries year_words dow_count
+
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        local wc_val ec_val date_str yr dow
+        wc_val=$(wc_file "$f")
+        ec_val=$(entry_count "$f")
+        date_str=$(file_to_date "$f")
+        yr="${date_str:0:4}"
+        dow=$(date_fmt "$date_str" '+%u')   # 1=Mon … 7=Sun
+
+        total_words=$((total_words + wc_val))
+        total_entries=$((total_entries + ec_val))
+        all_dates+=("$date_str")
+
+        year_entries[$yr]=$(( ${year_entries[$yr]:-0} + ec_val ))
+        year_words[$yr]=$(( ${year_words[$yr]:-0} + wc_val ))
+        [ -n "$dow" ] && dow_count[$dow]=$(( ${dow_count[$dow]:-0} + 1 ))
+
+        [ "$wc_val"  -gt "$longest_wc" ] && longest_wc=$wc_val   && longest_date=$date_str
+        [ "$ec_val"  -gt "$busiest_ec" ] && busiest_ec=$ec_val    && busiest_date=$date_str
+
+        # Longest-streak tracking (sorted ascending, so consecutive = +1 day)
+        if [ -n "$prev_date" ]; then
+            local expected
+            expected=$(date_offset "$prev_date" +1)
+            if [ "$date_str" = "$expected" ]; then
+                streak=$((streak + 1))
+                if [ "$streak" -gt "$max_streak" ]; then
+                    max_streak=$streak
+                    max_streak_start="$streak_start"
+                    max_streak_end="$date_str"
+                fi
+            else
+                streak=1
+                streak_start="$date_str"
+            fi
+        else
+            streak=1
+            streak_start="$date_str"
+            max_streak=1
+            max_streak_start="$date_str"
+            max_streak_end="$date_str"
+        fi
+        prev_date="$date_str"
+    done
+
+    # Current streak: walk backwards from today
+    local today curr_streak=0 curr_streak_start=""
+    today=$(now_date)
+    local check_date="$today"
+    for (( i=${#all_dates[@]}-1; i>=0; i-- )); do
+        if [ "${all_dates[$i]}" = "$check_date" ]; then
+            curr_streak=$((curr_streak + 1))
+            curr_streak_start="${all_dates[$i]}"
+            check_date=$(date_offset "$check_date" -1)
+        else
+            break
+        fi
+    done
+
+    local days=${#all_dates[@]}
+    local inbox_count
+    inbox_count=$(count_drafts)
+    [ ! -s "$INBOX" ] && inbox_count=0
+
+    printf '  Days written:     %d\n'   "$days"
+    printf '  Total entries:    %d\n'   "$total_entries"
+    printf '  Total words:      %d\n'   "$total_words"
+    [ "$total_entries" -gt 0 ] && \
+        printf '  Avg per entry:    %d words\n' "$((total_words / total_entries))"
+    [ -n "$longest_date" ] && \
+        printf '  Longest day:      %s  (%d words)\n'   "$longest_date" "$longest_wc"
+    [ "$busiest_ec" -gt 1 ] && \
+        printf '  Busiest day:      %s  (%d entries)\n' "$busiest_date" "$busiest_ec"
+    printf '  Inbox drafts:     %d waiting\n' "$inbox_count"
+    echo ""
+
+    printf '  Current streak:   %d day(s)' "$curr_streak"
+    [ "$curr_streak" -gt 1 ] && printf '  (%s → %s)' "$curr_streak_start" "$today"
+    printf '\n'
+    printf '  Best streak:      %d day(s)' "$max_streak"
+    [ "$max_streak" -gt 1 ] && printf '  (%s → %s)' "$max_streak_start" "$max_streak_end"
+    printf '\n'
+    echo ""
+
+    # Per-year breakdown
+    if [ "${#year_entries[@]}" -gt 0 ]; then
+        printf '  %-6s  %8s  %8s\n' "Year" "Entries" "Words"
+        printf '  ──────────────────────────────\n'
+        for yr in $(printf '%s\n' "${!year_entries[@]}" | sort); do
+            printf '  %-6s  %8d  %8d\n' "$yr" "${year_entries[$yr]:-0}" "${year_words[$yr]:-0}"
+        done
+        echo ""
+    fi
+
+    # Day-of-week breakdown (1=Mon … 7=Sun)
+    local dow_names=("" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun")
+    local has_dow=false
+    for d in 1 2 3 4 5 6 7; do
+        [ "${dow_count[$d]:-0}" -gt 0 ] && has_dow=true && break
+    done
+    if [ "$has_dow" = true ]; then
+        printf '  Day of week (days written):\n'
+        for d in 1 2 3 4 5 6 7; do
+            printf '    %-4s  %d\n' "${dow_names[$d]}" "${dow_count[$d]:-0}"
+        done
+        echo ""
+    fi
+}
+
+cmd_search() {
+    local q="$1"
+    [ -z "$q" ] && echo "  Usage: jnl search <term>" && return 1
+    echo ""
+    echo "  Searching: \"$q\""
+    echo ""
+    local found=0
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort -r); do
+        [ -f "$f" ] || continue
+        if grep -qi "$q" "$f"; then
+            echo "  $(file_to_date "$f"):"
+            grep -in "$q" "$f" | head -3 | while IFS= read -r line; do printf '    %s\n' "$line"; done
+            echo ""
+            found=$((found + 1))
+        fi
+    done
+    if [ -s "$INBOX" ] && grep -qi "$q" "$INBOX"; then
+        echo "  inbox (unfiled):"
+        grep -in "$q" "$INBOX" | head -3 | while IFS= read -r line; do printf '    %s\n' "$line"; done
+        echo ""
+        found=$((found + 1))
+    fi
+    [ "$found" -eq 0 ] && echo "  Nothing found."
+}
+
+cmd_tags() {
+    echo ""
+    echo "  Tags used:"
+    grep -roh '@[a-zA-Z][a-zA-Z0-9_-]*' "$JOURNAL_DIR" "$INBOX" 2>/dev/null \
+        | sed 's/.*://' | sort | uniq -c | sort -rn \
+        | awk '{printf "  %-24s  %d\n", $2, $1}'
+    echo ""
+}
+
+cmd_tag() {
+    local tag="$1"
+    [ -z "$tag" ] && echo "  Usage: jnl tag <tagname>" && return 1
+    [[ "$tag" != @* ]] && tag="@$tag"
+    echo ""
+    echo "  Entries tagged $tag:"
+    echo ""
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort -r); do
+        [ -f "$f" ] || continue
+        grep -q "$tag" "$f" || continue
+        echo "  ── $(file_to_date "$f") ──"
+        awk -v tag="$tag" '
+            /^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] / {
+                if (block ~ tag) printf "  %s", block
+                block = ""
+            }
+            { block = block $0 "\n" }
+            END { if (block ~ tag) printf "  %s", block }
+        ' "$f"
+        echo ""
+    done
+}
+
+cmd_random() {
+    local files=()
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(find "$JOURNAL_DIR" -name "*.md" -type f -print0 2>/dev/null)
+
+    if [ "${#files[@]}" -eq 0 ]; then
+        echo "  No journal entries yet."
+        return
+    fi
+
+    local pick="${files[$((RANDOM % ${#files[@]}))]}"
+    local date_str
+    date_str=$(file_to_date "$pick")
+    echo "  Random entry: $date_str"
+    cmd_log "$date_str"
+}
+
+# Reorder entries in a single file by timestamp in-place.
+# Returns 0 if the file was changed, 1 if it was already in order.
+_reorder_file() {
+    local f="$1"
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/jnl_reorder.XXXXXX)
+
+    local idx=0 block="" ts="" in_entry=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^\[([0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2})\] ]]; then
+            if [ "$in_entry" = true ]; then
+                printf '%s\n' "$block" > "$tmpdir/${ts// /T}__$(printf '%05d' $idx).blk"
+                idx=$((idx + 1))
+            fi
+            ts="${BASH_REMATCH[1]}"
+            block="$line"
+            in_entry=true
+        elif [ "$in_entry" = true ]; then
+            block="${block}"$'\n'"$line"
+        fi
+    done < "$f"
+
+    if [ "$in_entry" = true ] && [ -n "$(echo "$block" | tr -d '[:space:]')" ]; then
+        printf '%s\n' "$block" > "$tmpdir/${ts// /T}__$(printf '%05d' $idx).blk"
+    fi
+
+    local blk_files
+    blk_files=$(ls "$tmpdir"/*.blk 2>/dev/null | sort)
+    if [ -z "$blk_files" ]; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    local result_file
+    result_file=$(mktemp /tmp/jnl_reorder_out.XXXXXX)
+    local first=true
+    while IFS= read -r bf; do
+        [ -f "$bf" ] || continue
+        local bc
+        bc=$(< "$bf")               # command substitution strips trailing newlines
+        if [ "$first" = true ]; then
+            printf '%s\n' "$bc" > "$result_file"
+            first=false
+        else
+            printf '\n%s\n' "$bc" >> "$result_file"
+        fi
+    done <<< "$blk_files"
+
+    rm -rf "$tmpdir"
+
+    local orig new
+    orig=$(< "$f")
+    new=$(< "$result_file")
+
+    if [ "$orig" != "$new" ]; then
+        cp "$result_file" "$f"
+        rm "$result_file"
+        return 0
+    else
+        rm "$result_file"
+        return 1
+    fi
+}
+
+cmd_cleanup() {
+    echo ""
+    echo "  Scanning journal files..."
+
+    # UTF-8 codepoints for smart punctuation
+    local RSQM=$'\xe2\x80\x99'   # '  U+2019 RIGHT SINGLE QUOTATION MARK
+    local LDQM=$'\xe2\x80\x9c'   # "  U+201C LEFT DOUBLE QUOTATION MARK
+    local RDQM=$'\xe2\x80\x9d'   # "  U+201D RIGHT DOUBLE QUOTATION MARK
+
+    local fmt_changed=0 ord_changed=0 total=0
+
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        total=$((total + 1))
+        local date_str
+        date_str=$(file_to_date "$f")
+
+        # ── formatting: ...→… and smart quotes→straight ───────────────────
+        local orig new
+        orig=$(< "$f")
+        new=$(printf '%s' "$orig" \
+            | sed -e 's/\.\.\./…/g' \
+                  -e "s/${RSQM}/'/g" \
+                  -e "s/${LDQM}/\"/g" \
+                  -e "s/${RDQM}/\"/g")
+        if [ "$new" != "$orig" ]; then
+            printf '%s\n' "$new" > "$f"
+            fmt_changed=$((fmt_changed + 1))
+            echo "  → $date_str (formatting)"
+        fi
+
+        # ── reorder entries by timestamp ──────────────────────────────────
+        if _reorder_file "$f"; then
+            ord_changed=$((ord_changed + 1))
+            echo "  → $date_str (reordered)"
+        fi
+    done
+
+    echo ""
+    local total_changed=$((fmt_changed + ord_changed))
+    if [ "$total_changed" -eq 0 ]; then
+        echo "  All $total file(s) already clean."
+    else
+        [ "$fmt_changed" -gt 0 ] && printf '  Formatting fixed:  %d file(s)\n' "$fmt_changed"
+        [ "$ord_changed" -gt 0 ] && printf '  Entries reordered: %d file(s)\n' "$ord_changed"
+    fi
+    echo ""
+}
+
+cmd_export() {
+    local out="${1:-$NOTES_DIR/export.md}"
+    local count=0
+
+    > "$out"
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        [ -s "$out" ] && printf '\n' >> "$out"
+        cat "$f" >> "$out"
+        count=$((count + 1))
+    done
+
+    if [ "$count" -eq 0 ]; then
+        echo "  No entries to export."
+        rm -f "$out"
+        return
+    fi
+
+    local total_words
+    total_words=$(wc_file "$out")
+    echo "  Exported $count day(s), $total_words words → $out"
+}
+
+cmd_open() {
+    echo "  Opening $JOURNAL_DIR"
+    open_folder "$JOURNAL_DIR"
+}
+
+cmd_help() {
+    cat << 'HELP'
+
+  jnl                    write a new draft (added to inbox)
+  jnl "Title"            new draft with title pre-filled
+  jnl review             work through inbox one draft at a time
+  jnl browse             browse filed entries by year → month → day
+  jnl inbox              view inbox contents (read-only)
+  jnl log [date]         view a day's entries (default: today)
+  jnl yesterday          view yesterday's entries
+  jnl list               all journal files with entry + word counts
+  jnl stats              streak, totals, per-year, day-of-week breakdown
+  jnl search <term>      search journal + inbox
+  jnl tags               all @tags with usage counts
+  jnl tag <name>         all entries tagged @name
+  jnl random             display a random past entry
+  jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
+  jnl export [file]      combine all entries into one file (default: export.md)
+  jnl open               open journal folder in file manager
+
+  During review:
+    ↑/↓ — navigate between drafts
+    f   — file (uses draft's original date)
+    e   — edit, then continue navigating
+    d   — delete
+    q   — quit, keep remaining
+
+  Config (add to ~/.bashrc or ~/.zshrc):
+    export EDITOR=micro      terminal editor
+    export JNL_DIR=~/notes   change where files live
+
+HELP
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+
+case "${1:-new}" in
+    new|"")     cmd_new "" ;;
+    review)     cmd_review ;;
+    browse)     cmd_browse ;;
+    inbox)      cmd_inbox ;;
+    log)        cmd_log "${2:-}" ;;
+    yesterday)  cmd_yesterday ;;
+    list|ls)    cmd_list ;;
+    stats)      cmd_stats ;;
+    search)     cmd_search "$2" ;;
+    tags)       cmd_tags ;;
+    tag)        cmd_tag "$2" ;;
+    random)     cmd_random ;;
+    cleanup)    cmd_cleanup ;;
+    export)     cmd_export "${2:-}" ;;
+    open)       cmd_open ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            cmd_log "$1"
+        else
+            cmd_new "$*"
+        fi
+        ;;
+esac
