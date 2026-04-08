@@ -39,17 +39,25 @@ jnl tag <name>         all entries tagged @name
 jnl random             display a random past entry
 jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
 jnl export [file]      combine all entries into one file (default: export.md)
+jnl extract <tag> [file]
+                       copy or cut all entries tagged @tag to a file
+                       prompts for copy/cut  ·  default file: ~/notes/<tag>.md
 jnl open               open journal folder in file manager
+jnl config             interactively change configuration
 ```
 
 ## Config
 
-Set in `~/.bashrc` or `~/.zshrc`:
+Run `jnl config` for an interactive wizard, or set env vars in `~/.bashrc` / `~/.zshrc`:
 
 ```sh
-export JNL_DIR=~/notes   # where files live (default: ~/notes)
-export EDITOR=micro      # terminal editor (default: micro)
+export JNL_DIR=~/notes               # where files live (default: ~/notes)
+export EDITOR=micro                  # terminal editor (default: micro)
+export JNL_SPLIT_TAGS="work private" # tags that route to their own file
+                                     # @work entries → ~/notes/work.md
 ```
+
+Settings are saved to `~/.config/jnl/config`. Env vars always override the config file.
 
 ## File format
 

@@ -17,16 +17,30 @@
 #   jnl cleanup            standardise formatting + reorder entries by timestamp
 #   jnl export [file]      combine all entries into one file (default: export.md)
 #   jnl open               open journal folder in file explorer
+#   jnl config             interactively change configuration
 #   jnl help               show this help
 #
 # Install:
 #   cp jnl ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
 #
-# Config (set in ~/.bashrc or ~/.zshrc):
-#   JNL_DIR   — notes directory (default: ~/notes)
-#   EDITOR    — text editor    (default: micro)
+# Config:
+#   Run 'jnl config' to set options interactively.
+#   Settings are saved to ~/.config/jnl/config (or $XDG_CONFIG_HOME/jnl/config).
+#   Environment variables always override the config file:
+#   JNL_DIR         — notes directory (default: ~/notes)
+#   EDITOR          — text editor    (default: micro)
+#   JNL_SPLIT_TAGS  — space-separated tags that each route to their own file
+#                     e.g. JNL_SPLIT_TAGS="private work" →
+#                          @private entries → ~/notes/private.md
+#                          @work entries    → ~/notes/work.md
 
 # ── config ────────────────────────────────────────────────────────────────────
+
+# Source user config file; env vars already in the environment take precedence
+# because the file uses the `: "${VAR:=value}"` form (set-if-unset).
+_JNL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/jnl/config"
+# shellcheck source=/dev/null
+[ -f "$_JNL_CONF" ] && source "$_JNL_CONF"
 
 NOTES_DIR="${JNL_DIR:-$HOME/notes}"
 INBOX="$NOTES_DIR/inbox.md"
@@ -167,15 +181,37 @@ file_one_draft() {
     body=$(draft_body "$f")
     [ -z "$(echo "$body" | tr -d '[:space:]')" ] && echo "  Nothing to file." && return 1
 
+    suffix=$(draft_suffix "$f")
+
+    # Route to a split file if the entry contains a configured split tag
+    if [ -n "${JNL_SPLIT_TAGS:-}" ]; then
+        local full_content
+        full_content=$(cat "$f")
+        for stag in $JNL_SPLIT_TAGS; do
+            if echo "$full_content" | grep -q "@${stag}\b"; then
+                local split_file="$NOTES_DIR/${stag}.md"
+                [ -s "$split_file" ] && printf '\n' >> "$split_file"
+                if [ -n "$suffix" ]; then
+                    printf '[%s] %s\n%s\n' "$ts" "$suffix" "$body" >> "$split_file"
+                else
+                    printf '[%s]\n%s\n' "$ts" "$body" >> "$split_file"
+                fi
+                echo "  → ${stag}.md (@${stag})"
+                return 0
+            fi
+        done
+    fi
+
     jfile=$(journal_file "$date")
     mkdir -p "$(dirname "$jfile")"
-    suffix=$(draft_suffix "$f")
     [ -s "$jfile" ] && printf '\n' >> "$jfile"
     if [ -n "$suffix" ]; then
         printf '[%s] %s\n%s\n' "$ts" "$suffix" "$body" >> "$jfile"
     else
         printf '[%s]\n%s\n' "$ts" "$body" >> "$jfile"
     fi
+    _format_file "$jfile"
+    _reorder_file "$jfile"
     echo "  → $date.md"
 }
 
@@ -705,6 +741,22 @@ cmd_random() {
     cmd_log "$date_str"
 }
 
+# Normalise formatting in a single file in-place (... → … and smart quotes → straight).
+_format_file() {
+    local f="$1"
+    local RSQM=$'\xe2\x80\x99'
+    local LDQM=$'\xe2\x80\x9c'
+    local RDQM=$'\xe2\x80\x9d'
+    local orig new
+    orig=$(< "$f")
+    new=$(printf '%s' "$orig" \
+        | sed -e 's/\.\.\./…/g' \
+              -e "s/${RSQM}/'/g" \
+              -e "s/${LDQM}/\"/g" \
+              -e "s/${RDQM}/\"/g")
+    [ "$new" != "$orig" ] && printf '%s\n' "$new" > "$f"
+}
+
 # Reorder entries in a single file by timestamp in-place.
 # Returns 0 if the file was changed, 1 if it was already in order.
 _reorder_file() {
@@ -773,34 +825,21 @@ cmd_cleanup() {
     echo ""
     echo "  Scanning journal files..."
 
-    # UTF-8 codepoints for smart punctuation
-    local RSQM=$'\xe2\x80\x99'   # '  U+2019 RIGHT SINGLE QUOTATION MARK
-    local LDQM=$'\xe2\x80\x9c'   # "  U+201C LEFT DOUBLE QUOTATION MARK
-    local RDQM=$'\xe2\x80\x9d'   # "  U+201D RIGHT DOUBLE QUOTATION MARK
-
     local fmt_changed=0 ord_changed=0 total=0
 
     for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort); do
         [ -f "$f" ] || continue
         total=$((total + 1))
-        local date_str
+        local date_str orig
         date_str=$(file_to_date "$f")
 
-        # ── formatting: ...→… and smart quotes→straight ───────────────────
-        local orig new
         orig=$(< "$f")
-        new=$(printf '%s' "$orig" \
-            | sed -e 's/\.\.\./…/g' \
-                  -e "s/${RSQM}/'/g" \
-                  -e "s/${LDQM}/\"/g" \
-                  -e "s/${RDQM}/\"/g")
-        if [ "$new" != "$orig" ]; then
-            printf '%s\n' "$new" > "$f"
+        _format_file "$f"
+        if [ "$(< "$f")" != "$orig" ]; then
             fmt_changed=$((fmt_changed + 1))
             echo "  → $date_str (formatting)"
         fi
 
-        # ── reorder entries by timestamp ──────────────────────────────────
         if _reorder_file "$f"; then
             ord_changed=$((ord_changed + 1))
             echo "  → $date_str (reordered)"
@@ -841,6 +880,169 @@ cmd_export() {
     echo "  Exported $count day(s), $total_words words → $out"
 }
 
+cmd_extract() {
+    local tag="$1" mode="${2:-}" outfile="$3"
+    [ -z "$tag" ] && echo "  Usage: jnl extract <tag> [file]" && return 1
+    [[ "$tag" != @* ]] && tag="@$tag"
+    local tagname="${tag#@}"
+    [ -z "$outfile" ] && outfile="$NOTES_DIR/${tagname}.md"
+
+    if [ -z "$mode" ]; then
+        echo ""
+        printf '  Extract entries tagged %s\n\n' "$tag"
+        printf '  How would you like to do this?\n'
+        printf '    1. Copy  (entries stay in journal)\n'
+        printf '    2. Cut   (entries removed from journal)\n'
+        printf '\n  > '
+        local choice
+        IFS= read -r choice </dev/tty
+        echo ""
+        case "$choice" in
+            1|copy|Copy)   mode="copy" ;;
+            2|cut|Cut)     mode="cut" ;;
+            *) echo "  Cancelled." && return ;;
+        esac
+    fi
+
+    if [[ "$mode" != "copy" && "$mode" != "cut" ]]; then
+        echo "  Mode must be 'copy' or 'cut'."
+        return 1
+    fi
+
+    local tmp_out
+    tmp_out=$(mktemp /tmp/jnl_extract.XXXXXX)
+    local source_files=0 entry_count=0
+
+    for f in $(find "$JOURNAL_DIR" -name "*.md" -type f 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        grep -q "$tag" "$f" || continue
+
+        # Extract matching entry blocks
+        local matched
+        matched=$(awk -v tag="$tag" '
+            /^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] / {
+                if (block ~ tag) { if (out != "") out = out "\n"; out = out block }
+                block = ""
+            }
+            { block = block $0 "\n" }
+            END { if (block ~ tag) { if (out != "") out = out "\n"; out = out block } }
+            END { printf "%s", out }
+        ' "$f")
+
+        if [ -n "$(echo "$matched" | tr -d '[:space:]')" ]; then
+            [ -s "$tmp_out" ] && printf '\n' >> "$tmp_out"
+            printf '%s' "$matched" >> "$tmp_out"
+            source_files=$((source_files + 1))
+            entry_count=$((entry_count + $(echo "$matched" | grep -c '^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] ')))
+        fi
+
+        if [ "$mode" = "cut" ]; then
+            local remaining
+            remaining=$(awk -v tag="$tag" '
+                /^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] / {
+                    if (block !~ tag) { if (out != "") out = out "\n"; out = out block }
+                    block = ""
+                }
+                { block = block $0 "\n" }
+                END { if (block !~ tag) { if (out != "") out = out "\n"; out = out block } }
+                END { printf "%s", out }
+            ' "$f")
+
+            if [ -z "$(echo "$remaining" | tr -d '[:space:]')" ]; then
+                rm "$f"
+                # remove empty parent dirs
+                rmdir "$(dirname "$f")" 2>/dev/null
+                rmdir "$(dirname "$(dirname "$f")")" 2>/dev/null
+            else
+                printf '%s\n' "$remaining" > "$f"
+            fi
+        fi
+    done
+
+    if [ "$source_files" -eq 0 ]; then
+        echo "  No entries tagged $tag found."
+        rm "$tmp_out"
+        return
+    fi
+
+    [ -s "$outfile" ] && printf '\n' >> "$outfile"
+    cat "$tmp_out" >> "$outfile"
+    rm "$tmp_out"
+
+    local wc
+    wc=$(wc_file "$outfile")
+    printf '  %s  (%d entr%s from %d file(s), %d words in %s)\n' \
+        "$([ "$mode" = "cut" ] && echo "Cut:" || echo "Copied:")" \
+        "$entry_count" "$([ "$entry_count" -eq 1 ] && echo 'y' || echo 'ies')" \
+        "$source_files" "$wc" "$(basename "$outfile")"
+}
+
+cmd_config() {
+    local conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/jnl"
+    local conf_file="$conf_dir/config"
+
+    # Start from the currently-effective values
+    local cur_dir="$NOTES_DIR"
+    local cur_editor="$EDITOR"
+    local cur_tags="${JNL_SPLIT_TAGS:-}"
+
+    echo ""
+    echo "  jnl configuration"
+    echo "  Config file: $conf_file"
+    echo ""
+
+    while true; do
+        printf '  1.  Journal directory   %s\n' "$cur_dir"
+        printf '  2.  Editor              %s\n' "$cur_editor"
+        printf '  3.  Split tags          %s\n' "${cur_tags:-none}"
+        echo ""
+        printf '  Enter number to change, or q to save and quit: '
+        local choice
+        IFS= read -r choice </dev/tty
+        echo ""
+
+        case "$choice" in
+            1)
+                printf '  New journal directory [%s]: ' "$cur_dir"
+                IFS= read -r val </dev/tty
+                [ -n "$val" ] && cur_dir="${val/#\~/$HOME}"
+                echo ""
+                ;;
+            2)
+                printf '  New editor [%s]: ' "$cur_editor"
+                IFS= read -r val </dev/tty
+                [ -n "$val" ] && cur_editor="$val"
+                echo ""
+                ;;
+            3)
+                printf '  Split tags (space-separated, or blank for none) [%s]: ' "$cur_tags"
+                IFS= read -r val </dev/tty
+                cur_tags="$val"
+                echo ""
+                ;;
+            q|Q|"")
+                break
+                ;;
+            *)
+                echo "  Unknown option — enter 1, 2, 3, or q."
+                echo ""
+                ;;
+        esac
+    done
+
+    mkdir -p "$conf_dir"
+    {
+        echo "# jnl configuration — written by 'jnl config' on $(date '+%Y-%m-%d %H:%M')"
+        echo "# Env vars set before jnl runs always override these values."
+        echo ": \"\${JNL_DIR:=$cur_dir}\""
+        echo ": \"\${EDITOR:=$cur_editor}\""
+        echo ": \"\${JNL_SPLIT_TAGS:=$cur_tags}\""
+    } > "$conf_file"
+
+    echo "  Saved → $conf_file"
+    echo ""
+}
+
 cmd_open() {
     echo "  Opening $JOURNAL_DIR"
     open_folder "$JOURNAL_DIR"
@@ -864,7 +1066,11 @@ cmd_help() {
   jnl random             display a random past entry
   jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
   jnl export [file]      combine all entries into one file (default: export.md)
+  jnl extract <tag> [file]
+                         copy or cut all entries tagged @tag to a file
+                         prompts for copy/cut  ·  default file: ~/notes/<tag>.md
   jnl open               open journal folder in file manager
+  jnl config             interactively change configuration
 
   During review:
     ↑/↓ — navigate between drafts
@@ -873,9 +1079,10 @@ cmd_help() {
     d   — delete
     q   — quit, keep remaining
 
-  Config (add to ~/.bashrc or ~/.zshrc):
-    export EDITOR=micro      terminal editor
-    export JNL_DIR=~/notes   change where files live
+  Config:
+    jnl config                                interactive configuration wizard
+    Saved to ~/.config/jnl/config (or $XDG_CONFIG_HOME/jnl/config)
+    Env vars (EDITOR, JNL_DIR, JNL_SPLIT_TAGS) override the config file.
 
 HELP
 }
@@ -897,7 +1104,9 @@ case "${1:-new}" in
     random)     cmd_random ;;
     cleanup)    cmd_cleanup ;;
     export)     cmd_export "${2:-}" ;;
+    extract)    cmd_extract "${2:-}" "${3:-}" ;;
     open)       cmd_open ;;
+    config)     cmd_config ;;
     help|--help|-h) cmd_help ;;
     *)
         if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
