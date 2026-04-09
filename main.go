@@ -460,7 +460,15 @@ func cmdReview() {
 			tmpPath := tmp.Name()
 			fmt.Fprint(tmp, d.raw)
 			tmp.Close()
-			openInEditor(tmpPath)
+			if err := openInEditor(tmpPath); err != nil {
+				os.Remove(tmpPath)
+				if errors.Is(err, errQuitWithoutSaving) {
+					fmt.Println("  Edit discarded.")
+				} else {
+					fmt.Fprintln(os.Stderr, "editor error:", err)
+				}
+				break
+			}
 			raw := readFile(tmpPath)
 			os.Remove(tmpPath)
 			parsed := parseEntries(raw)
