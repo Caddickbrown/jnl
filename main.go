@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -35,7 +36,6 @@ var (
 	notesDir   string
 	inboxPath  string
 	journalDir string
-	editor     string
 )
 
 func init() {
@@ -43,7 +43,6 @@ func init() {
 	notesDir = envOr("JNL_DIR", filepath.Join(home, "notes"))
 	inboxPath = filepath.Join(notesDir, "inbox.md")
 	journalDir = filepath.Join(notesDir, "journal")
-	editor = envOr("EDITOR", "micro")
 	os.MkdirAll(journalDir, 0755)
 }
 
@@ -259,15 +258,27 @@ func fileDraft(e entry) (string, error) {
 // ── editor ────────────────────────────────────────────────────────────────────
 
 func openInEditor(path string) error {
-	args := []string{path}
-	if strings.Contains(editor, "micro") {
-		args = append([]string{"+99999"}, args...)
+	// User explicitly set EDITOR — use it unconditionally.
+	if editorEnv := os.Getenv("EDITOR"); editorEnv != "" {
+		args := []string{path}
+		if strings.Contains(editorEnv, "micro") {
+			args = append([]string{"-filetype", "jnl-markdown", "+99999"}, args...)
+		}
+		cmd := exec.Command(editorEnv, args...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
 	}
-	cmd := exec.Command(editor, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// EDITOR not set — try micro if available, otherwise use built-in.
+	if microPath, err := exec.LookPath("micro"); err == nil {
+		cmd := exec.Command(microPath, "-filetype", "jnl-markdown", "+99999", path)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	return runBuiltinEditor(path)
 }
 
 // ── terminal raw input ────────────────────────────────────────────────────────
@@ -346,6 +357,10 @@ func cmdNew(title string) {
 	tmp.Close()
 
 	if err := openInEditor(tmpPath); err != nil {
+		if errors.Is(err, errQuitWithoutSaving) {
+			fmt.Println("  Nothing written — discarded.")
+			return
+		}
 		fmt.Fprintln(os.Stderr, "editor error:", err)
 		return
 	}

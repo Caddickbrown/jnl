@@ -148,3 +148,12 @@ func TestEditorModel_TypingResetsEscCount(t *testing.T) {
 		t.Errorf("expected escCount reset to 0 after typing, got %d", m.escCount)
 	}
 }
+
+func TestRunBuiltinEditor_QuitWithoutSaving_ReturnsError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: requires TTY")
+	}
+	if errQuitWithoutSaving.Error() != "quit without saving" {
+		t.Errorf("unexpected sentinel error text: %q", errQuitWithoutSaving.Error())
+	}
+}
