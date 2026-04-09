@@ -26,6 +26,7 @@ type editorModel struct {
 	path      string
 	status    editorStatus
 	escCount  int
+	saveErr   string
 }
 
 func newEditorModel(path, content string) editorModel {
@@ -56,7 +57,10 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+s":
-			_ = os.WriteFile(m.path, []byte(m.textarea.Value()), 0644)
+			if err := os.WriteFile(m.path, []byte(m.textarea.Value()), 0644); err != nil {
+				m.saveErr = "Save failed: " + err.Error()
+				return m, nil
+			}
 			m.status = editorSaved
 			return m, tea.Quit
 
@@ -73,6 +77,7 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+z":
+			m.escCount = 0
 			if len(m.undoStack) > 0 {
 				prev := m.undoStack[len(m.undoStack)-1]
 				m.undoStack = m.undoStack[:len(m.undoStack)-1]
@@ -100,7 +105,11 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m editorModel) View() string {
-	return m.textarea.View() + "\n\nCtrl+S save · Ctrl+Z undo · Ctrl+Q quit"
+	hint := "Ctrl+S save · Ctrl+Z undo · Ctrl+Q quit · Esc×2 quit"
+	if m.saveErr != "" {
+		hint = m.saveErr + " — " + hint
+	}
+	return m.textarea.View() + "\n\n" + hint
 }
 
 func runBuiltinEditor(path string) error {
@@ -114,7 +123,7 @@ func runBuiltinEditor(path string) error {
 	if err != nil {
 		return err
 	}
-	if final.(editorModel).status == editorQuit {
+	if fm, ok := final.(editorModel); !ok || fm.status == editorQuit {
 		return errQuitWithoutSaving
 	}
 	return nil
