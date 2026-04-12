@@ -1,4 +1,5 @@
 dist/
+jnl
 jnl-go
 *.exe
 jnl-linux-*
