@@ -1060,15 +1060,39 @@ func cmdTag(name string) {
 }
 
 func cmdRandom() {
-	files := allJournalFiles(true)
-	if len(files) == 0 {
+	type indexedEntry struct {
+		e        entry
+		filePath string
+	}
+	var all []indexedEntry
+	for _, f := range allJournalFiles(true) {
+		for _, e := range parseEntries(readFile(f)) {
+			all = append(all, indexedEntry{e, f})
+		}
+	}
+	if len(all) == 0 {
 		fmt.Println("  No journal entries yet.")
 		return
 	}
-	pick := files[rand.Intn(len(files))]
-	dateStr := fileToDate(pick)
-	fmt.Printf("  Random entry: %s\n", dateStr)
-	cmdLog(dateStr)
+	pick := all[rand.Intn(len(all))]
+	e := pick.e
+
+	fmt.Println()
+	header := "[" + e.ts + "]"
+	if e.suffix != "" {
+		header += " " + e.suffix
+	}
+	fmt.Printf("  %s\n", header)
+	for _, line := range strings.Split(e.body, "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Println()
+	fmt.Print("  [e]dit  [q]uit  > ")
+	k := readKey()
+	fmt.Println()
+	if k.char == 'e' || k.char == 'E' {
+		openInEditor(pick.filePath)
+	}
 }
 
 func cmdCleanup() {
