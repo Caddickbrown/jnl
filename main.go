@@ -38,7 +38,41 @@ var (
 	journalDir string
 )
 
+func configFilePath() string {
+	home, _ := os.UserHomeDir()
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "jnl", "config")
+	}
+	return filepath.Join(home, ".config", "jnl", "config")
+}
+
+// loadConfig reads ~/.config/jnl/config and sets any env vars that are not
+// already set in the environment. The file uses shell default-assignment
+// syntax so that sourcing it directly also works:
+//
+//	: "${JNL_DIR:=/home/user/notes}"
+func loadConfig() {
+	path := configFilePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // missing config is fine
+	}
+	// Match lines of the form:  : "${KEY:=VALUE}"
+	re := regexp.MustCompile(`^:\s+"\$\{(\w+):=(.*)\}"$`)
+	for _, line := range strings.Split(string(data), "\n") {
+		m := re.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		key, val := m[1], m[2]
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+}
+
 func init() {
+	loadConfig()
 	home, _ := os.UserHomeDir()
 	notesDir = envOr("JNL_DIR", filepath.Join(home, "notes"))
 	inboxPath = filepath.Join(notesDir, "inbox.md")
@@ -51,6 +85,33 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func cmdConfig() {
+	path := configFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		home, _ := os.UserHomeDir()
+		content := fmt.Sprintf(
+			"# jnl configuration — written by 'jnl config' on %s\n"+
+				"# Env vars set before jnl runs always override these values.\n"+
+				": \"${JNL_DIR:=%s}\"\n"+
+				": \"${EDITOR:=micro}\"\n",
+			time.Now().Format("2006-01-02 15:04"),
+			filepath.Join(home, "notes"),
+		)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if err := openInEditor(path); err != nil {
+		fmt.Fprintf(os.Stderr, "editor error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // ── time helpers ──────────────────────────────────────────────────────────────
@@ -1230,6 +1291,7 @@ func cmdHelp() {
   jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
   jnl export [file]      combine all entries into one file (default: export.md)
   jnl open               open journal folder in file manager
+  jnl config             open config file (~/.config/jnl/config) in editor
 
   During review:
     ↑/↓ — navigate between drafts
@@ -1238,7 +1300,7 @@ func cmdHelp() {
     d   — delete
     q   — quit, keep remaining
 
-  Config (set in environment):
+  Config (~/.config/jnl/config, env vars always override):
     JNL_DIR=~/notes   change where files live
     EDITOR=micro      terminal editor
 
@@ -1306,6 +1368,8 @@ func main() {
 		cmdExport(out)
 	case "open":
 		cmdOpen()
+	case "config":
+		cmdConfig()
 	case "help", "--help", "-h":
 		cmdHelp()
 	default:
