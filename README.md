@@ -2,21 +2,10 @@
 
 A terminal journaling toolkit. Write, file, review, and search journal entries from the command line.
 
-## Two versions
-
-- **`jnl`** — bash script, zero dependencies, works anywhere
-- **`main.go`** — Go port with identical behaviour, cross-compile with `make all`
-
-## Install (bash)
+## Install
 
 ```sh
-cp jnl ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
-```
-
-## Install (Go)
-
-```sh
-go build -o ~/.local/bin/jnl .
+make install
 # or cross-compile for all platforms:
 make all
 ```

@@ -176,6 +176,47 @@ func wordCountFile(path string) int {
 	return wordCount(readFile(path))
 }
 
+// ── tag helpers ───────────────────────────────────────────────────────────────
+
+var tagRE = regexp.MustCompile(`@[a-zA-Z][a-zA-Z0-9_-]*`)
+
+// splitTags returns all @tag tokens found in s, in order of appearance.
+// Equivalent to: grep -oh '@[a-zA-Z][a-zA-Z0-9_-]*'
+func splitTags(s string) []string {
+	return tagRE.FindAllString(s, -1)
+}
+
+// parseSplitTags reads JNL_SPLIT_TAGS and returns the normalised @tag list.
+// Values may be space- or comma-separated, with or without the @ prefix.
+func parseSplitTags() []string {
+	raw := os.Getenv("JNL_SPLIT_TAGS")
+	if raw == "" {
+		return nil
+	}
+	fields := strings.Fields(strings.ReplaceAll(raw, ",", " "))
+	tags := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if !strings.HasPrefix(f, "@") {
+			f = "@" + f
+		}
+		tags = append(tags, f)
+	}
+	return tags
+}
+
+// splitTagTarget returns the destination file path if the entry's text
+// matches a JNL_SPLIT_TAGS tag, or "" if it should be filed normally.
+// The file is <notesDir>/<tagname>.md (e.g. ~/notes/forb.md).
+func splitTagTarget(raw string) (tag, path string) {
+	for _, t := range parseSplitTags() {
+		if strings.Contains(raw, t) {
+			name := strings.TrimPrefix(t, "@")
+			return t, filepath.Join(notesDir, name+".md")
+		}
+	}
+	return "", ""
+}
+
 // ── journal file discovery ────────────────────────────────────────────────────
 
 func allJournalFiles(ascending bool) []string {
@@ -280,19 +321,29 @@ func rebuildInbox(entries []entry) error {
 	return writeFile(inboxPath, content)
 }
 
-// fileDraft appends a draft entry to the correct journal day file
+// fileDraft appends a draft entry to the correct file.
+// If the entry contains a JNL_SPLIT_TAGS tag it is routed to <notesDir>/<tag>.md;
+// otherwise it goes to the normal date-based journal file.
+// Returns a label describing where it was filed ("@forb" or "2026-04-14").
 func fileDraft(e entry) (string, error) {
-	date := e.date
-	if date == "" {
-		date = nowDate()
-	}
 	if e.body == "" {
 		return "", fmt.Errorf("nothing to file")
 	}
 
-	jfile := journalFile(date)
-	if err := os.MkdirAll(filepath.Dir(jfile), 0755); err != nil {
-		return "", err
+	var jfile, label string
+	if tag, path := splitTagTarget(e.raw); path != "" {
+		jfile = path
+		label = tag
+	} else {
+		date := e.date
+		if date == "" {
+			date = nowDate()
+		}
+		jfile = journalFile(date)
+		label = date
+		if err := os.MkdirAll(filepath.Dir(jfile), 0755); err != nil {
+			return "", err
+		}
 	}
 
 	var sb strings.Builder
@@ -313,7 +364,7 @@ func fileDraft(e entry) (string, error) {
 		fmt.Fprintf(&sb, "[%s]\n%s\n", e.ts, e.body)
 	}
 
-	return date, writeFile(jfile, sb.String())
+	return label, writeFile(jfile, sb.String())
 }
 
 // ── editor ────────────────────────────────────────────────────────────────────
@@ -475,6 +526,9 @@ func cmdReview() {
 		if d.ts != "" {
 			fmt.Printf("  ·  %s", d.ts)
 		}
+		if d.suffix != "" {
+			fmt.Printf("  ·  %s", d.suffix)
+		}
 		fmt.Printf("  ·  %d words ───\n\n", wc)
 
 		lines := strings.Split(d.body, "\n")
@@ -485,7 +539,7 @@ func cmdReview() {
 			fmt.Printf("  %s\n", l)
 		}
 		fmt.Println()
-		fmt.Print("  ↑/↓ navigate  [f]ile  [e]dit  [d]elete  [q]uit\n  > ")
+		fmt.Print("  ↑/↓ navigate  [f]ile  [e]dit  [d]elete  [n]ew  [q]uit\n  > ")
 
 		k := readKey()
 		fmt.Println()
@@ -534,7 +588,12 @@ func cmdReview() {
 			os.Remove(tmpPath)
 			parsed := parseEntries(raw)
 			if len(parsed) > 0 {
-				drafts[idx] = parsed[0]
+				// Replace current draft with first parsed entry, then insert
+				// any additional entries immediately after (preserving order).
+				tail := make([]entry, len(drafts)-idx-1)
+				copy(tail, drafts[idx+1:])
+				drafts = append(drafts[:idx], parsed...)
+				drafts = append(drafts, tail...)
 			}
 		case k.char == 'd' || k.char == 'D':
 			fmt.Print("  Delete this draft? [y/N] ")
@@ -548,6 +607,35 @@ func cmdReview() {
 					idx = len(drafts) - 1
 				}
 			}
+		case k.char == 'n' || k.char == 'N':
+			tmp, err := os.CreateTemp("", "jnl_new_*.md")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				break
+			}
+			tmpPath := tmp.Name()
+			fmt.Fprintf(tmp, "[%s]\n", nowTS())
+			tmp.Close()
+			if err := openInEditor(tmpPath); err != nil {
+				os.Remove(tmpPath)
+				if !errors.Is(err, errQuitWithoutSaving) {
+					fmt.Fprintln(os.Stderr, "editor error:", err)
+				}
+				break
+			}
+			raw := readFile(tmpPath)
+			os.Remove(tmpPath)
+			parsed := parseEntries(raw)
+			if len(parsed) == 0 || strings.TrimSpace(parsed[0].body) == "" {
+				fmt.Println("  Nothing written — discarded.")
+				break
+			}
+			// Insert new entries immediately after current index
+			tail := make([]entry, len(drafts)-idx-1)
+			copy(tail, drafts[idx+1:])
+			drafts = append(drafts[:idx+1], parsed...)
+			drafts = append(drafts, tail...)
+			idx++ // move to the newly added entry
 		case k.char == 'q' || k.char == 'Q':
 			fmt.Println("  Stopped.")
 			goto done
@@ -1051,12 +1139,10 @@ func cmdSearch(query string) {
 }
 
 func cmdTags() {
-	tagRE := regexp.MustCompile(`@[a-zA-Z][a-zA-Z0-9_-]*`)
 	counts := map[string]int{}
 
 	scan := func(path string) {
-		content := readFile(path)
-		for _, tag := range tagRE.FindAllString(content, -1) {
+		for _, tag := range splitTags(readFile(path)) {
 			counts[tag]++
 		}
 	}

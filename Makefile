@@ -22,10 +22,10 @@ darwin-arm64:
 windows:
 	GOOS=windows GOARCH=amd64  go build $(LDFLAGS) -o $(DIST)/jnl.exe           .
 
-# Build for the current machine and install to ~/.local/bin/jnl-go
+# Build for the current machine and install to ~/.local/bin/jnl
 install:
-	go build $(LDFLAGS) -o ~/.local/bin/jnl-go .
-	@echo "Installed → ~/.local/bin/jnl-go"
+	go build $(LDFLAGS) -o ~/.local/bin/jnl .
+	@echo "Installed → ~/.local/bin/jnl"
 
 clean:
 	rm -rf $(DIST)
