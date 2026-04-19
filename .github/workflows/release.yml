@@ -21,11 +21,10 @@ jobs:
       - name: Build all platforms
         run: |
           mkdir -p dist
-          GOOS=linux   GOARCH=amd64           go build -ldflags="-s -w" -o dist/jnl-linux-amd64  .
-          GOOS=linux   GOARCH=arm64           go build -ldflags="-s -w" -o dist/jnl-linux-arm64  .
-          GOOS=linux   GOARCH=arm   GOARM=6   go build -ldflags="-s -w" -o dist/jnl-linux-armv6  .
-          GOOS=darwin  GOARCH=amd64           go build -ldflags="-s -w" -o dist/jnl-macos-amd64  .
-          GOOS=darwin  GOARCH=arm64           go build -ldflags="-s -w" -o dist/jnl-macos-arm64  .
+          GOOS=linux   GOARCH=amd64   go build -ldflags="-s -w" -o dist/jnl-linux-amd64  .
+          GOOS=linux   GOARCH=arm64   go build -ldflags="-s -w" -o dist/jnl-linux-arm64  .
+          GOOS=darwin  GOARCH=amd64   go build -ldflags="-s -w" -o dist/jnl-macos-amd64  .
+          GOOS=darwin  GOARCH=arm64   go build -ldflags="-s -w" -o dist/jnl-macos-arm64  .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
