@@ -3,24 +3,27 @@ MODULE   := $(shell head -1 go.mod | awk '{print $$2}')
 LDFLAGS  := -ldflags="-s -w"
 DIST     := dist
 
-.PHONY: all linux linux-arm64 darwin-amd64 darwin-arm64 windows install clean fmt vet
+.PHONY: all linux linux-arm64 linux-arm darwin-amd64 darwin-arm64 windows install clean fmt vet
 
-all: linux linux-arm64 darwin-amd64 darwin-arm64 windows
+all: linux linux-arm64 linux-arm darwin-amd64 darwin-arm64 windows
 
 linux:
-	GOOS=linux   GOARCH=amd64  go build $(LDFLAGS) -o $(DIST)/jnl-linux-amd64   .
+	GOOS=linux   GOARCH=amd64        go build $(LDFLAGS) -o $(DIST)/jnl-linux-amd64   .
 
 linux-arm64:
-	GOOS=linux   GOARCH=arm64  go build $(LDFLAGS) -o $(DIST)/jnl-linux-arm64   .
+	GOOS=linux   GOARCH=arm64        go build $(LDFLAGS) -o $(DIST)/jnl-linux-arm64   .
+
+linux-arm:
+	GOOS=linux   GOARCH=arm   GOARM=7 go build $(LDFLAGS) -o $(DIST)/jnl-linux-arm    .
 
 darwin-amd64:
-	GOOS=darwin  GOARCH=amd64  go build $(LDFLAGS) -o $(DIST)/jnl-macos-amd64   .
+	GOOS=darwin  GOARCH=amd64        go build $(LDFLAGS) -o $(DIST)/jnl-macos-amd64   .
 
 darwin-arm64:
-	GOOS=darwin  GOARCH=arm64  go build $(LDFLAGS) -o $(DIST)/jnl-macos-arm64   .
+	GOOS=darwin  GOARCH=arm64        go build $(LDFLAGS) -o $(DIST)/jnl-macos-arm64   .
 
 windows:
-	GOOS=windows GOARCH=amd64  go build $(LDFLAGS) -o $(DIST)/jnl.exe           .
+	GOOS=windows GOARCH=amd64        go build $(LDFLAGS) -o $(DIST)/jnl.exe           .
 
 # Build for the current machine and install to ~/.local/bin/jnl
 install:
