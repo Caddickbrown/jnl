@@ -1,0 +1,35 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build all platforms
+        run: |
+          mkdir -p dist
+          GOOS=linux   GOARCH=amd64        go build -ldflags="-s -w" -o dist/jnl-linux-amd64   .
+          GOOS=linux   GOARCH=arm64        go build -ldflags="-s -w" -o dist/jnl-linux-arm64   .
+          GOOS=linux   GOARCH=arm   GOARM=7 go build -ldflags="-s -w" -o dist/jnl-linux-arm    .
+          GOOS=darwin  GOARCH=amd64        go build -ldflags="-s -w" -o dist/jnl-macos-amd64   .
+          GOOS=darwin  GOARCH=arm64        go build -ldflags="-s -w" -o dist/jnl-macos-arm64   .
+          GOOS=windows GOARCH=amd64        go build -ldflags="-s -w" -o dist/jnl.exe            .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
