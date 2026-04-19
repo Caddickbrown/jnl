@@ -35,6 +35,40 @@ jnl open               open journal folder in file manager
 jnl config             interactively change configuration
 ```
 
+## Tags
+
+Tags are `@word` tokens written anywhere in an entry body. A tag starts with `@` followed by a letter, then any mix of letters, numbers, underscores, or hyphens — for example `@work`, `@ideas`, `@health-check`.
+
+```
+[2024-03-15 09:30:00] Morning thoughts
+Feeling good today. Need to follow up on the @work project and book a @health appointment.
+```
+
+**Listing tags**
+
+```sh
+jnl tags          # all @tags across the journal, sorted by usage count
+```
+
+**Filtering by tag**
+
+```sh
+jnl tag work      # all entries containing @work (@ prefix optional)
+jnl tag @work     # same
+```
+
+**Routing entries to their own file**
+
+Set `JNL_SPLIT_TAGS` to a space- or comma-separated list of tags. When you file a draft that contains one of those tags, it is written to `$JNL_DIR/<tagname>.md` instead of the normal date-based journal file.
+
+```sh
+export JNL_SPLIT_TAGS="work private"
+# @work entries  → ~/notes/work.md
+# @private entries → ~/notes/private.md
+```
+
+This is useful for keeping specific topics (a work log, a private diary) in their own file while the rest of your journal stays in the date hierarchy.
+
 ## Config
 
 Run `jnl config` for an interactive wizard, or set env vars in `~/.bashrc` / `~/.zshrc`:
