@@ -372,6 +372,10 @@ func fileDraft(e entry) (string, error) {
 func openInEditor(path string) error {
 	// User explicitly set EDITOR — use it unconditionally.
 	if editorEnv := os.Getenv("EDITOR"); editorEnv != "" {
+		// "builtin" or "default" → always use the built-in editor.
+		if editorEnv == "builtin" || editorEnv == "default" {
+			return runBuiltinEditor(path)
+		}
 		args := []string{path}
 		if strings.Contains(editorEnv, "micro") {
 			args = append([]string{"-filetype", "jnl-markdown", "+99999"}, args...)
@@ -1387,8 +1391,9 @@ func cmdHelp() {
     q   — quit, keep remaining
 
   Config (~/.config/jnl/config, env vars always override):
-    JNL_DIR=~/notes   change where files live
-    EDITOR=micro      terminal editor
+    JNL_DIR=~/notes      change where files live
+    EDITOR=micro         use micro as the editor
+    EDITOR=builtin       always use the built-in editor (no external tool needed)
 
 `)
 }
