@@ -4,10 +4,79 @@ A terminal journaling toolkit. Write, file, review, and search journal entries f
 
 ## Install
 
+**Download a pre-built binary** (no Go required):
+
+| Platform | Binary |
+|----------|--------|
+| macOS — Apple Silicon | `jnl-macos-arm64` |
+| macOS — Intel | `jnl-macos-amd64` |
+| Linux — x86-64 | `jnl-linux-amd64` |
+| Linux — arm64 (Raspberry Pi 4/5, Zero 2W) | `jnl-linux-arm64` |
+| Linux — ARMv6 (Raspberry Pi Zero) | `jnl-linux-armv6` |
+
 ```sh
-make install
-# or cross-compile for all platforms:
-make all
+# macOS Apple Silicon
+curl -L https://github.com/Caddickbrown/jnl/releases/latest/download/jnl-macos-arm64 \
+  -o ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
+
+# Linux x86-64
+curl -L https://github.com/Caddickbrown/jnl/releases/latest/download/jnl-linux-amd64 \
+  -o ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
+
+# Raspberry Pi Zero
+curl -L https://github.com/Caddickbrown/jnl/releases/latest/download/jnl-linux-armv6 \
+  -o ~/.local/bin/jnl && chmod +x ~/.local/bin/jnl
+```
+
+Make sure `~/.local/bin` is on your PATH (`echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc`).
+
+**Build from source** (requires Go):
+
+```sh
+make install    # builds for current platform → ~/.local/bin/jnl
+make all        # cross-compiles all platforms into ./dist/
+```
+
+## Tab autocomplete
+
+**bash** — add to `~/.bashrc`:
+
+```bash
+_jnl_complete() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        local cmds="review browse inbox log yesterday list stats search tags tag random cleanup export open config help"
+        COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
+    fi
+}
+complete -F _jnl_complete jnl
+```
+
+**zsh** — add to `~/.zshrc`:
+
+```zsh
+_jnl() {
+    local -a cmds
+    cmds=(
+        'review:work through inbox one draft at a time'
+        'browse:browse filed entries by year → month → day'
+        'inbox:view inbox contents'
+        'log:view a day''s entries'
+        'yesterday:view yesterday''s entries'
+        'list:all journal files with word counts'
+        'stats:streak, totals, day-of-week breakdown'
+        'search:search journal + inbox'
+        'tags:all @tags with usage counts'
+        'tag:entries for a specific @tag'
+        'random:display a random past entry'
+        'cleanup:standardise punctuation and reorder timestamps'
+        'export:combine all entries into one file'
+        'open:open journal folder in file manager'
+        'config:open config file in editor'
+    )
+    _describe 'jnl command' cmds
+}
+compdef _jnl jnl
 ```
 
 ## Usage
@@ -28,9 +97,6 @@ jnl tag <name>         all entries tagged @name
 jnl random             display a random past entry
 jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
 jnl export [file]      combine all entries into one file (default: export.md)
-jnl extract <tag> [file]
-                       copy or cut all entries tagged @tag to a file
-                       prompts for copy/cut  ·  default file: ~/notes/<tag>.md
 jnl open               open journal folder in file manager
 jnl config             interactively change configuration
 ```
@@ -63,11 +129,9 @@ Set `JNL_SPLIT_TAGS` to a space- or comma-separated list of tags. When you file 
 
 ```sh
 export JNL_SPLIT_TAGS="work private"
-# @work entries  → ~/notes/work.md
+# @work entries    → ~/notes/work.md
 # @private entries → ~/notes/private.md
 ```
-
-This is useful for keeping specific topics (a work log, a private diary) in their own file while the rest of your journal stays in the date hierarchy.
 
 ## Config
 
@@ -75,12 +139,17 @@ Run `jnl config` for an interactive wizard, or set env vars in `~/.bashrc` / `~/
 
 ```sh
 export JNL_DIR=~/notes               # where files live (default: ~/notes)
-export EDITOR=micro                  # terminal editor (default: micro)
+export EDITOR=micro                  # use micro as the editor
+export EDITOR=builtin                # always use the built-in editor (no external tool needed)
 export JNL_SPLIT_TAGS="work private" # tags that route to their own file
-                                     # @work entries → ~/notes/work.md
 ```
 
 Settings are saved to `~/.config/jnl/config`. Env vars always override the config file.
+
+**Editor priority:**
+1. `$EDITOR` env var — used unconditionally if set (`builtin` or `default` forces the built-in)
+2. `micro` — used if found on PATH
+3. Built-in editor — used if nothing else is available (always works, no install needed)
 
 ## File format
 
