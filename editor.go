@@ -29,9 +29,12 @@ type editorModel struct {
 	saveErr   string
 }
 
-func newEditorModel(path, content string) editorModel {
+func newEditorModel(path, content string, cursorEnd bool) editorModel {
 	ta := textarea.New()
 	ta.SetValue(content)
+	if cursorEnd {
+		ta.CursorEnd()
+	}
 	ta.Focus()
 	ta.ShowLineNumbers = false
 	ta.SetWidth(80)
@@ -112,12 +115,12 @@ func (m editorModel) View() string {
 	return m.textarea.View() + "\n\n" + hint
 }
 
-func runBuiltinEditor(path string) error {
+func runBuiltinEditor(path string, cursorEnd bool) error {
 	content, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	m := newEditorModel(path, string(content))
+	m := newEditorModel(path, string(content), cursorEnd)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {

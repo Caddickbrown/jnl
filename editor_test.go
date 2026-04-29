@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewEditorModel_SetsContent(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "hello world")
+	m := newEditorModel("/tmp/jnl_test.md", "hello world", false)
 	if got := m.textarea.Value(); got != "hello world" {
 		t.Errorf("expected %q, got %q", "hello world", got)
 	}
@@ -21,7 +21,7 @@ func TestNewEditorModel_SetsContent(t *testing.T) {
 }
 
 func TestEditorModel_TypingPushesUndoStack(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "")
+	m := newEditorModel("/tmp/jnl_test.md", "", false)
 
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m = result.(editorModel)
@@ -38,7 +38,7 @@ func TestEditorModel_TypingPushesUndoStack(t *testing.T) {
 }
 
 func TestEditorModel_CtrlZ_RestoresPreviousSnapshot(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "")
+	m := newEditorModel("/tmp/jnl_test.md", "", false)
 
 	for _, r := range "ab" {
 		result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -57,7 +57,7 @@ func TestEditorModel_CtrlZ_RestoresPreviousSnapshot(t *testing.T) {
 }
 
 func TestEditorModel_CtrlZ_NoopOnEmptyStack(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "hello")
+	m := newEditorModel("/tmp/jnl_test.md", "hello", false)
 
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
 	m = result.(editorModel)
@@ -78,7 +78,7 @@ func TestEditorModel_CtrlS_SetsSavedStatus(t *testing.T) {
 	tmp.Close()
 	defer os.Remove(tmp.Name())
 
-	m := newEditorModel(tmp.Name(), "entry text")
+	m := newEditorModel(tmp.Name(), "entry text", false)
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	fm := result.(editorModel)
 
@@ -93,7 +93,7 @@ func TestEditorModel_CtrlS_SetsSavedStatus(t *testing.T) {
 }
 
 func TestEditorModel_CtrlQ_SetsQuitStatus(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "hello")
+	m := newEditorModel("/tmp/jnl_test.md", "hello", false)
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
 	fm := result.(editorModel)
 
@@ -103,7 +103,7 @@ func TestEditorModel_CtrlQ_SetsQuitStatus(t *testing.T) {
 }
 
 func TestEditorModel_EscEsc_SetsQuitStatus(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "hello")
+	m := newEditorModel("/tmp/jnl_test.md", "hello", false)
 
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = result.(editorModel)
@@ -119,7 +119,7 @@ func TestEditorModel_EscEsc_SetsQuitStatus(t *testing.T) {
 }
 
 func TestEditorModel_UndoStack_CappedAt100(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "")
+	m := newEditorModel("/tmp/jnl_test.md", "", false)
 
 	for i := 0; i < 100; i++ {
 		m.undoStack = append(m.undoStack, "x")
@@ -134,7 +134,7 @@ func TestEditorModel_UndoStack_CappedAt100(t *testing.T) {
 }
 
 func TestEditorModel_TypingResetsEscCount(t *testing.T) {
-	m := newEditorModel("/tmp/jnl_test.md", "")
+	m := newEditorModel("/tmp/jnl_test.md", "", false)
 
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = result.(editorModel)

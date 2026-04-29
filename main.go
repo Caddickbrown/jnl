@@ -108,7 +108,7 @@ func cmdConfig() {
 			os.Exit(1)
 		}
 	}
-	if err := openInEditor(path); err != nil {
+	if err := openInEditor(path, false); err != nil {
 		fmt.Fprintf(os.Stderr, "editor error: %v\n", err)
 		os.Exit(1)
 	}
@@ -371,16 +371,20 @@ func fileDraft(e entry) (string, error) {
 
 // ── editor ────────────────────────────────────────────────────────────────────
 
-func openInEditor(path string) error {
+func openInEditor(path string, cursorEnd bool) error {
+	pos := "+99999"
+	if cursorEnd {
+		pos = "+1:9999"
+	}
 	// User explicitly set EDITOR — use it unconditionally.
 	if editorEnv := os.Getenv("EDITOR"); editorEnv != "" {
 		// "builtin" or "default" → always use the built-in editor.
 		if editorEnv == "builtin" || editorEnv == "default" {
-			return runBuiltinEditor(path)
+			return runBuiltinEditor(path, cursorEnd)
 		}
 		args := []string{path}
 		if strings.Contains(editorEnv, "micro") {
-			args = append([]string{"-filetype", "jnl-markdown", "-softwrap", "true", "+99999"}, args...)
+			args = append([]string{"-filetype", "jnl-markdown", "-softwrap", "true", pos}, args...)
 		}
 		cmd := exec.Command(editorEnv, args...)
 		cmd.Stdin = os.Stdin
@@ -390,13 +394,13 @@ func openInEditor(path string) error {
 	}
 	// EDITOR not set — try micro if available, otherwise use built-in.
 	if microPath, err := exec.LookPath("micro"); err == nil {
-		cmd := exec.Command(microPath, "-filetype", "jnl-markdown", "-softwrap", "true", "+99999", path)
+		cmd := exec.Command(microPath, "-filetype", "jnl-markdown", "-softwrap", "true", pos, path)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	return runBuiltinEditor(path)
+	return runBuiltinEditor(path, cursorEnd)
 }
 
 // ── terminal raw input ────────────────────────────────────────────────────────
@@ -467,14 +471,15 @@ func cmdNew(title string) {
 	defer os.Remove(tmpPath)
 
 	ts := nowTS()
+	cursorEnd := title == ""
 	if title != "" {
 		fmt.Fprintf(tmp, "[%s] %s\n", ts, title)
 	} else {
-		fmt.Fprintf(tmp, "[%s] ", ts)
+		fmt.Fprintf(tmp, "[%s] \n", ts)
 	}
 	tmp.Close()
 
-	if err := openInEditor(tmpPath); err != nil {
+	if err := openInEditor(tmpPath, cursorEnd); err != nil {
 		if errors.Is(err, errQuitWithoutSaving) {
 			fmt.Println("  Nothing written — discarded.")
 			return
@@ -581,7 +586,7 @@ func cmdReview() {
 			tmpPath := tmp.Name()
 			fmt.Fprint(tmp, d.raw)
 			tmp.Close()
-			if err := openInEditor(tmpPath); err != nil {
+			if err := openInEditor(tmpPath, false); err != nil {
 				os.Remove(tmpPath)
 				if errors.Is(err, errQuitWithoutSaving) {
 					fmt.Println("  Edit discarded.")
@@ -620,9 +625,9 @@ func cmdReview() {
 				break
 			}
 			tmpPath := tmp.Name()
-			fmt.Fprintf(tmp, "[%s] ", nowTS())
+			fmt.Fprintf(tmp, "[%s] \n", nowTS())
 			tmp.Close()
-			if err := openInEditor(tmpPath); err != nil {
+			if err := openInEditor(tmpPath, true); err != nil {
 				os.Remove(tmpPath)
 				if !errors.Is(err, errQuitWithoutSaving) {
 					fmt.Fprintln(os.Stderr, "editor error:", err)
@@ -1244,7 +1249,7 @@ func cmdRandom() {
 	k := readKey()
 	fmt.Println()
 	if k.char == 'e' || k.char == 'E' {
-		openInEditor(pick.filePath)
+		openInEditor(pick.filePath, false)
 	}
 }
 
