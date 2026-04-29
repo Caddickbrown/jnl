@@ -326,7 +326,7 @@ func rebuildInbox(entries []entry) error {
 // otherwise it goes to the normal date-based journal file.
 // Returns a label describing where it was filed ("@forb" or "2026-04-14").
 func fileDraft(e entry) (string, error) {
-	if e.body == "" {
+	if e.body == "" && e.suffix == "" {
 		return "", fmt.Errorf("nothing to file")
 	}
 
@@ -358,8 +358,10 @@ func fileDraft(e entry) (string, error) {
 		}
 	}
 
-	if e.suffix != "" {
+	if e.suffix != "" && e.body != "" {
 		fmt.Fprintf(&sb, "[%s] %s\n%s\n", e.ts, e.suffix, e.body)
+	} else if e.suffix != "" {
+		fmt.Fprintf(&sb, "[%s] %s\n", e.ts, e.suffix)
 	} else {
 		fmt.Fprintf(&sb, "[%s]\n%s\n", e.ts, e.body)
 	}
@@ -378,7 +380,7 @@ func openInEditor(path string) error {
 		}
 		args := []string{path}
 		if strings.Contains(editorEnv, "micro") {
-			args = append([]string{"-filetype", "jnl-markdown", "+99999"}, args...)
+			args = append([]string{"-filetype", "jnl-markdown", "-softwrap", "true", "+99999"}, args...)
 		}
 		cmd := exec.Command(editorEnv, args...)
 		cmd.Stdin = os.Stdin
@@ -388,7 +390,7 @@ func openInEditor(path string) error {
 	}
 	// EDITOR not set — try micro if available, otherwise use built-in.
 	if microPath, err := exec.LookPath("micro"); err == nil {
-		cmd := exec.Command(microPath, "-filetype", "jnl-markdown", "+99999", path)
+		cmd := exec.Command(microPath, "-filetype", "jnl-markdown", "-softwrap", "true", "+99999", path)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -468,7 +470,7 @@ func cmdNew(title string) {
 	if title != "" {
 		fmt.Fprintf(tmp, "[%s] %s\n", ts, title)
 	} else {
-		fmt.Fprintf(tmp, "[%s]\n", ts)
+		fmt.Fprintf(tmp, "[%s] ", ts)
 	}
 	tmp.Close()
 
@@ -483,7 +485,7 @@ func cmdNew(title string) {
 
 	raw := readFile(tmpPath)
 	entries := parseEntries(raw)
-	if len(entries) == 0 || strings.TrimSpace(entries[0].body) == "" {
+	if len(entries) == 0 || (strings.TrimSpace(entries[0].body) == "" && strings.TrimSpace(entries[0].suffix) == "") {
 		fmt.Println("  Nothing written — discarded.")
 		return
 	}
@@ -618,7 +620,7 @@ func cmdReview() {
 				break
 			}
 			tmpPath := tmp.Name()
-			fmt.Fprintf(tmp, "[%s]\n", nowTS())
+			fmt.Fprintf(tmp, "[%s] ", nowTS())
 			tmp.Close()
 			if err := openInEditor(tmpPath); err != nil {
 				os.Remove(tmpPath)
@@ -630,7 +632,7 @@ func cmdReview() {
 			raw := readFile(tmpPath)
 			os.Remove(tmpPath)
 			parsed := parseEntries(raw)
-			if len(parsed) == 0 || strings.TrimSpace(parsed[0].body) == "" {
+			if len(parsed) == 0 || (strings.TrimSpace(parsed[0].body) == "" && strings.TrimSpace(parsed[0].suffix) == "") {
 				fmt.Println("  Nothing written — discarded.")
 				break
 			}
