@@ -33,9 +33,10 @@ import (
 // ── config ────────────────────────────────────────────────────────────────────
 
 var (
-	notesDir   string
-	inboxPath  string
-	journalDir string
+	notesDir     string
+	inboxPath    string
+	transferPath string
+	journalDir   string
 )
 
 func configFilePath() string {
@@ -76,6 +77,7 @@ func init() {
 	home, _ := os.UserHomeDir()
 	notesDir = envOr("JNL_DIR", filepath.Join(home, "notes"))
 	inboxPath = filepath.Join(notesDir, "inbox.md")
+	transferPath = filepath.Join(notesDir, "transfer.md")
 	journalDir = filepath.Join(notesDir, "journal")
 	os.MkdirAll(journalDir, 0755)
 }
@@ -368,6 +370,86 @@ func fileDraft(e entry) (string, error) {
 	}
 
 	return label, writeFile(jfile, sb.String())
+}
+
+// ── transfer ──────────────────────────────────────────────────────────────────
+
+// parseTransfer parses transfer.md content into entries.
+// If the file contains proper [YYYY-MM-DD HH:MM:SS] headers they are used as-is.
+// Paragraphs without headers are wrapped with the current timestamp so they
+// can be filed like any other entry (including split-tag routing).
+func parseTransfer(content string) []entry {
+	// Try standard entry parsing first — handles fully-formatted content.
+	if entries := parseEntries(content); len(entries) > 0 {
+		return entries
+	}
+	// No headers found — treat each non-empty paragraph as its own entry.
+	var entries []entry
+	for _, para := range strings.Split(content, "\n\n") {
+		trimmed := strings.TrimSpace(para)
+		if trimmed == "" {
+			continue
+		}
+		ts := nowTS()
+		entries = append(entries, entry{
+			date: nowDate(),
+			ts:   ts,
+			body: trimmed,
+			raw:  fmt.Sprintf("[%s]\n%s", ts, trimmed),
+		})
+	}
+	return entries
+}
+
+// cmdTransfer reads transfer.md, files every entry automatically (no interactive
+// review), then clears the file. Split-tag routing (JNL_SPLIT_TAGS) is fully
+// respected — an entry tagged @work goes to <notesDir>/work.md just as it would
+// from `jnl review`.
+func cmdTransfer() {
+	if !fileNonEmpty(transferPath) {
+		fmt.Println("  transfer.md is empty — nothing to file.")
+		return
+	}
+
+	content := readFile(transferPath)
+	entries := parseTransfer(content)
+	if len(entries) == 0 {
+		fmt.Println("  transfer.md has no parseable entries.")
+		return
+	}
+
+	fmt.Printf("\n  Filing %d entry/entries from transfer.md...\n\n", len(entries))
+
+	var filed, failed int
+	for _, e := range entries {
+		label, err := fileDraft(e)
+		if err != nil {
+			fmt.Printf("  ✗  %v\n", err)
+			failed++
+		} else {
+			preview := e.suffix
+			if preview == "" && e.body != "" {
+				words := strings.Fields(e.body)
+				if len(words) > 8 {
+					words = words[:8]
+				}
+				preview = strings.Join(words, " ") + "…"
+			}
+			fmt.Printf("  → %s  ·  %s\n", label, preview)
+			filed++
+		}
+	}
+
+	// Clear transfer.md regardless (even partial success).
+	os.WriteFile(transferPath, nil, 0644)
+
+	fmt.Println()
+	fmt.Printf("  Filed: %d", filed)
+	if failed > 0 {
+		fmt.Printf("  ·  Failed: %d", failed)
+	}
+	fmt.Println("  ·  transfer.md cleared.")
+	fmt.Println()
 }
 
 // ── editor ────────────────────────────────────────────────────────────────────
@@ -1375,6 +1457,7 @@ func cmdHelp() {
 	fmt.Print(`
   jnl                    write a new draft (added to inbox)
   jnl "Title"            new draft with title pre-filled
+  jnl transfer           auto-file everything in transfer.md (no review)
   jnl review             work through inbox one draft at a time
   jnl browse             browse filed entries by year → month → day
   jnl inbox              view inbox contents (read-only)
@@ -1399,9 +1482,15 @@ func cmdHelp() {
     q   — quit, keep remaining
 
   Config (~/.config/jnl/config, env vars always override):
-    JNL_DIR=~/notes      change where files live
-    EDITOR=micro         use micro as the editor
-    EDITOR=builtin       always use the built-in editor (no external tool needed)
+    JNL_DIR=~/notes          change where files live
+    EDITOR=micro             use micro as the editor
+    EDITOR=builtin           always use the built-in editor (no external tool needed)
+    JNL_SPLIT_TAGS=@work     route entries tagged @work to <JNL_DIR>/work.md
+
+  transfer.md ($JNL_DIR/transfer.md):
+    Drop entries here freely — with or without [timestamp] headers.
+    Run `jnl transfer` to auto-file everything with no interactive review.
+    Split-tag routing is fully respected (e.g. @work → work.md).
 
 `)
 }
@@ -1423,6 +1512,8 @@ func main() {
 			title = strings.Join(args[1:], " ")
 		}
 		cmdNew(title)
+	case "transfer":
+		cmdTransfer()
 	case "review":
 		cmdReview()
 	case "browse":
