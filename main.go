@@ -99,7 +99,8 @@ func cmdConfig() {
 			"# jnl configuration — written by 'jnl config' on %s\n"+
 				"# Env vars set before jnl runs always override these values.\n"+
 				": \"${JNL_DIR:=%s}\"\n"+
-				": \"${EDITOR:=micro}\"\n",
+				": \"${EDITOR:=micro}\"\n"+
+				": \"${JNL_SPLIT_TAGS:=}\"\n",
 			time.Now().Format("2006-01-02 15:04"),
 			filepath.Join(home, "notes"),
 		)
