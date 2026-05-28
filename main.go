@@ -1,14 +1,17 @@
 // jnl — a terminal journaling toolkit (Go port)
 //
 // Identical file format to the bash version:
-//   $JNL_DIR/inbox.md          — unsorted drafts
-//   $JNL_DIR/journal/YYYY/MM/DD.md — filed entries
+//
+//	$JNL_DIR/inbox.md          — unsorted drafts
+//	$JNL_DIR/journal/YYYY/MM/DD.md — filed entries
 //
 // Build:
-//   go build -o jnl .
+//
+//	go build -o jnl .
 //
 // Cross-compile (see Makefile):
-//   make all
+//
+//	make all
 package main
 
 import (
@@ -990,6 +993,46 @@ func cmdInbox() {
 	fmt.Println()
 }
 
+// cmdSort reorders the entries in inbox.md by timestamp (oldest first),
+// in place. The inbox file format and content are otherwise preserved.
+func cmdSort() {
+	if !fileNonEmpty(inboxPath) {
+		fmt.Println("  Inbox is empty — nothing to sort.")
+		return
+	}
+
+	entries := splitInbox()
+	if len(entries) < 2 {
+		fmt.Println("  Inbox has fewer than 2 entries — nothing to sort.")
+		return
+	}
+
+	sorted := make([]entry, len(entries))
+	copy(sorted, entries)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].ts < sorted[j].ts
+	})
+
+	changed := false
+	for i := range entries {
+		if entries[i].ts != sorted[i].ts {
+			changed = true
+			break
+		}
+	}
+
+	if !changed {
+		fmt.Printf("  Inbox already in date order (%d entries).\n", len(entries))
+		return
+	}
+
+	if err := rebuildInbox(sorted); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return
+	}
+	fmt.Printf("  Sorted inbox into date order (%d entries).\n", len(sorted))
+}
+
 func cmdLog(dateStr string) {
 	if dateStr == "" {
 		dateStr = nowDate()
@@ -1461,6 +1504,7 @@ func cmdHelp() {
   jnl review             work through inbox one draft at a time
   jnl browse             browse filed entries by year → month → day
   jnl inbox              view inbox contents (read-only)
+  jnl sort               sort inbox.md entries into date order (in place)
   jnl log [date]         view a day's entries (default: today)
   jnl yesterday          view yesterday's entries
   jnl list               all journal files with entry + word counts
@@ -1489,7 +1533,7 @@ func cmdHelp() {
 
   transfer.md ($JNL_DIR/transfer.md):
     Drop entries here freely — with or without [timestamp] headers.
-    Run `jnl transfer` to auto-file everything with no interactive review.
+    Run 'jnl transfer' to auto-file everything with no interactive review.
     Split-tag routing is fully respected (e.g. @work → work.md).
 
 `)
@@ -1520,6 +1564,8 @@ func main() {
 		cmdBrowse()
 	case "inbox":
 		cmdInbox()
+	case "sort":
+		cmdSort()
 	case "log":
 		date := ""
 		if len(args) > 1 {
