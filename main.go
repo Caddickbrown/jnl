@@ -1,14 +1,17 @@
 // jnl — a terminal journaling toolkit (Go port)
 //
 // Identical file format to the bash version:
-//   $JNL_DIR/inbox.md          — unsorted drafts
-//   $JNL_DIR/journal/YYYY/MM/DD.md — filed entries
+//
+//	$JNL_DIR/inbox.md          — unsorted drafts
+//	$JNL_DIR/journal/YYYY/MM/DD.md — filed entries
 //
 // Build:
-//   go build -o jnl .
+//
+//	go build -o jnl .
 //
 // Cross-compile (see Makefile):
-//   make all
+//
+//	make all
 package main
 
 import (
@@ -157,8 +160,35 @@ func readFile(path string) string {
 	return string(b)
 }
 
+// writeFile writes content to path atomically: it writes to a temp file in the
+// same directory and renames it into place, so an interrupted write can never
+// leave a half-written or truncated file. This matters for a journaling tool
+// whose files are the user's only copy of their notes.
 func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0644)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".jnl-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func fileExists(path string) bool {
@@ -210,9 +240,17 @@ func parseSplitTags() []string {
 // splitTagTarget returns the destination file path if the entry's text
 // matches a JNL_SPLIT_TAGS tag, or "" if it should be filed normally.
 // The file is <notesDir>/<tagname>.md (e.g. ~/notes/forb.md).
+//
+// Matching is on whole @tag tokens, not substrings, so @work does not match
+// @workshop. The token set is extracted with the same regex used everywhere
+// else (tagRE), guaranteeing identical tokenisation.
 func splitTagTarget(raw string) (tag, path string) {
+	present := map[string]bool{}
+	for _, tok := range splitTags(raw) {
+		present[tok] = true
+	}
 	for _, t := range parseSplitTags() {
-		if strings.Contains(raw, t) {
+		if present[t] {
 			name := strings.TrimPrefix(t, "@")
 			return t, filepath.Join(notesDir, name+".md")
 		}
@@ -286,6 +324,39 @@ func parseEntries(content string) []entry {
 	return entries
 }
 
+// leadingPreamble returns any content that appears before the first
+// [timestamp] header. parseEntries silently discards such content, so any
+// command that parses a file and writes it back (sort, review, cleanup) must
+// preserve the preamble or it would be lost. Returns "" when there is no
+// non-blank content before the first header.
+func leadingPreamble(content string) string {
+	var pre []string
+	for _, line := range strings.Split(content, "\n") {
+		if entryHeaderRE.MatchString(line) {
+			break
+		}
+		pre = append(pre, line)
+	}
+	text := strings.TrimRight(strings.Join(pre, "\n"), "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return text
+}
+
+// sortedByTimestamp returns a copy of entries ordered by timestamp, oldest
+// first. The sort is stable, so entries sharing a timestamp keep their
+// original relative order. The ts field is fixed-width (YYYY-MM-DD HH:MM:SS),
+// so a lexicographic compare is also chronological.
+func sortedByTimestamp(entries []entry) []entry {
+	sorted := make([]entry, len(entries))
+	copy(sorted, entries)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].ts < sorted[j].ts
+	})
+	return sorted
+}
+
 func countEntries(path string) int {
 	content := readFile(path)
 	return len(parseEntries(content))
@@ -310,15 +381,19 @@ func splitInbox() []entry {
 	return parseEntries(readFile(inboxPath))
 }
 
-// rebuildInbox writes a slice of entries back to inbox
-func rebuildInbox(entries []entry) error {
-	if len(entries) == 0 {
-		return os.WriteFile(inboxPath, nil, 0644)
-	}
+// rebuildInbox writes a slice of entries back to inbox, preserving any leading
+// preamble (content before the first timestamp header) so it is never lost.
+func rebuildInbox(preamble string, entries []entry) error {
 	var parts []string
+	if preamble != "" {
+		parts = append(parts, strings.TrimRight(preamble, "\n"))
+	}
 	for _, e := range entries {
 		// Rebuild from raw, normalised to one trailing newline
 		parts = append(parts, strings.TrimRight(e.raw, "\n"))
+	}
+	if len(parts) == 0 {
+		return writeFile(inboxPath, "")
 	}
 	content := strings.Join(parts, "\n\n") + "\n"
 	return writeFile(inboxPath, content)
@@ -586,7 +661,10 @@ func cmdNew(title string) {
 		existing := strings.TrimRight(readFile(inboxPath), "\n")
 		normalised = existing + "\n\n" + normalised
 	}
-	writeFile(inboxPath, normalised)
+	if err := writeFile(inboxPath, normalised); err != nil {
+		fmt.Fprintln(os.Stderr, "error: could not save draft:", err)
+		return
+	}
 
 	fmt.Printf("  Draft saved. Inbox: %d draft(s).\n", countDrafts())
 }
@@ -597,6 +675,7 @@ func cmdReview() {
 		return
 	}
 
+	preamble := leadingPreamble(readFile(inboxPath))
 	drafts := splitInbox()
 	var filed, deleted int
 
@@ -737,7 +816,9 @@ func cmdReview() {
 	}
 
 done:
-	rebuildInbox(drafts)
+	if err := rebuildInbox(preamble, drafts); err != nil {
+		fmt.Fprintln(os.Stderr, "error: could not update inbox:", err)
+	}
 	remaining := len(drafts)
 
 	fmt.Println()
@@ -988,6 +1069,44 @@ func cmdInbox() {
 		fmt.Printf("  %s\n", line)
 	}
 	fmt.Println()
+}
+
+// cmdSort reorders the entries in inbox.md by timestamp (oldest first),
+// in place. The inbox file format and content are otherwise preserved.
+func cmdSort() {
+	if !fileNonEmpty(inboxPath) {
+		fmt.Println("  Inbox is empty — nothing to sort.")
+		return
+	}
+
+	content := readFile(inboxPath)
+	preamble := leadingPreamble(content)
+	entries := parseEntries(content)
+	if len(entries) < 2 {
+		fmt.Println("  Inbox has fewer than 2 entries — nothing to sort.")
+		return
+	}
+
+	sorted := sortedByTimestamp(entries)
+
+	changed := false
+	for i := range entries {
+		if entries[i].ts != sorted[i].ts {
+			changed = true
+			break
+		}
+	}
+
+	if !changed {
+		fmt.Printf("  Inbox already in date order (%d entries).\n", len(entries))
+		return
+	}
+
+	if err := rebuildInbox(preamble, sorted); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return
+	}
+	fmt.Printf("  Sorted inbox into date order (%d entries).\n", len(sorted))
 }
 
 func cmdLog(dateStr string) {
@@ -1360,22 +1479,22 @@ func cmdCleanup() {
 		fixed = strings.ReplaceAll(fixed, ldqm, "\"")
 		fixed = strings.ReplaceAll(fixed, rdqm, "\"")
 		if fixed != orig {
-			writeFile(f, fixed)
+			if err := writeFile(f, fixed); err != nil {
+				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", dateStr, err)
+				continue
+			}
 			fmtChanged++
 			fmt.Printf("  → %s (formatting)\n", dateStr)
 			orig = fixed // use updated content for reorder check
 		}
 
 		// ── reorder entries by timestamp ──────────────────────────────────
+		preamble := leadingPreamble(orig)
 		entries := parseEntries(orig)
 		if len(entries) < 2 {
 			continue
 		}
-		sorted := make([]entry, len(entries))
-		copy(sorted, entries)
-		sort.SliceStable(sorted, func(i, j int) bool {
-			return sorted[i].ts < sorted[j].ts
-		})
+		sorted := sortedByTimestamp(entries)
 		// Check if order changed
 		changed := false
 		for i := range entries {
@@ -1386,6 +1505,9 @@ func cmdCleanup() {
 		}
 		if changed {
 			var parts []string
+			if preamble != "" {
+				parts = append(parts, strings.TrimRight(preamble, "\n"))
+			}
 			for _, e := range sorted {
 				header := "[" + e.ts + "]"
 				if e.suffix != "" {
@@ -1393,7 +1515,10 @@ func cmdCleanup() {
 				}
 				parts = append(parts, header+"\n"+e.body)
 			}
-			writeFile(f, strings.Join(parts, "\n\n")+"\n")
+			if err := writeFile(f, strings.Join(parts, "\n\n")+"\n"); err != nil {
+				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", dateStr, err)
+				continue
+			}
 			ordChanged++
 			fmt.Printf("  → %s (reordered)\n", dateStr)
 		}
@@ -1461,6 +1586,7 @@ func cmdHelp() {
   jnl review             work through inbox one draft at a time
   jnl browse             browse filed entries by year → month → day
   jnl inbox              view inbox contents (read-only)
+  jnl sort               sort inbox.md entries into date order (in place)
   jnl log [date]         view a day's entries (default: today)
   jnl yesterday          view yesterday's entries
   jnl list               all journal files with entry + word counts
@@ -1489,7 +1615,7 @@ func cmdHelp() {
 
   transfer.md ($JNL_DIR/transfer.md):
     Drop entries here freely — with or without [timestamp] headers.
-    Run `jnl transfer` to auto-file everything with no interactive review.
+    Run 'jnl transfer' to auto-file everything with no interactive review.
     Split-tag routing is fully respected (e.g. @work → work.md).
 
 `)
@@ -1520,6 +1646,8 @@ func main() {
 		cmdBrowse()
 	case "inbox":
 		cmdInbox()
+	case "sort":
+		cmdSort()
 	case "log":
 		date := ""
 		if len(args) > 1 {

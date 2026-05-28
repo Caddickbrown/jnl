@@ -45,7 +45,7 @@ make all        # cross-compiles all platforms into ./dist/
 _jnl_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        local cmds="review browse inbox log yesterday list stats search tags tag random cleanup export open config help"
+        local cmds="review browse inbox sort log yesterday list stats search tags tag random cleanup export open config help"
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
     fi
 }
@@ -61,6 +61,7 @@ _jnl() {
         'review:work through inbox one draft at a time'
         'browse:browse filed entries by year → month → day'
         'inbox:view inbox contents'
+        'sort:sort inbox.md entries into date order'
         'log:view a day''s entries'
         'yesterday:view yesterday''s entries'
         'list:all journal files with word counts'
@@ -87,6 +88,7 @@ jnl "Title"            new draft with title pre-filled
 jnl review             work through inbox one draft at a time
 jnl browse             browse filed entries by year → month → day
 jnl inbox              view inbox contents (read-only)
+jnl sort               sort inbox.md entries into date order (in place)
 jnl log [date]         view a day's entries (default: today)
 jnl yesterday          view yesterday's entries
 jnl list               all journal files with entry + word counts
