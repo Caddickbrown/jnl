@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -274,5 +275,40 @@ func TestWriteFile_RoundTripAndMode(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, ".jnl-*.tmp"))
 	if len(matches) != 0 {
 		t.Errorf("temp files left behind: %v", matches)
+	}
+}
+
+// ── cmdCleanup split-tag extraction ─────────────────────────────────────────
+
+func TestCmdCleanup_ExtractsSplitTaggedEntries(t *testing.T) {
+	dir := withTempNotesDir(t)
+	t.Setenv("JNL_SPLIT_TAGS", "@work")
+
+	// A date journal with one plain entry and one tagged entry.
+	jf := journalFile("2026-05-20")
+	if err := os.MkdirAll(filepath.Dir(jf), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "[2026-05-20 08:00:00] plain note\nbody one\n\n" +
+		"[2026-05-20 09:00:00] @work standup\nbody two\n"
+	if err := writeFile(jf, content); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCleanup()
+
+	// The tagged entry must have moved out of the date journal...
+	dateFile := readFile(jf)
+	if !strings.Contains(dateFile, "plain note") {
+		t.Errorf("date journal lost plain entry: %q", dateFile)
+	}
+	if strings.Contains(dateFile, "@work standup") {
+		t.Errorf("tagged entry was not removed from date journal: %q", dateFile)
+	}
+
+	// ...and into work.md.
+	tagFile := readFile(filepath.Join(dir, "work.md"))
+	if !strings.Contains(tagFile, "@work standup") || !strings.Contains(tagFile, "body two") {
+		t.Errorf("tagged entry not filed into work.md: %q", tagFile)
 	}
 }

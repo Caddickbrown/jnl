@@ -381,9 +381,11 @@ func splitInbox() []entry {
 	return parseEntries(readFile(inboxPath))
 }
 
-// rebuildInbox writes a slice of entries back to inbox, preserving any leading
-// preamble (content before the first timestamp header) so it is never lost.
-func rebuildInbox(preamble string, entries []entry) error {
+// renderEntries rebuilds file content from a leading preamble and a slice of
+// entries, preserving any preamble (content before the first timestamp header)
+// so it is never lost. Entries are emitted from their raw text so original
+// formatting is preserved. Returns "" when there is nothing to write.
+func renderEntries(preamble string, entries []entry) string {
 	var parts []string
 	if preamble != "" {
 		parts = append(parts, strings.TrimRight(preamble, "\n"))
@@ -393,10 +395,15 @@ func rebuildInbox(preamble string, entries []entry) error {
 		parts = append(parts, strings.TrimRight(e.raw, "\n"))
 	}
 	if len(parts) == 0 {
-		return writeFile(inboxPath, "")
+		return ""
 	}
-	content := strings.Join(parts, "\n\n") + "\n"
-	return writeFile(inboxPath, content)
+	return strings.Join(parts, "\n\n") + "\n"
+}
+
+// rebuildInbox writes a slice of entries back to inbox, preserving any leading
+// preamble (content before the first timestamp header) so it is never lost.
+func rebuildInbox(preamble string, entries []entry) error {
+	return writeFile(inboxPath, renderEntries(preamble, entries))
 }
 
 // fileDraft appends a draft entry to the correct file.
@@ -1465,6 +1472,7 @@ func cmdCleanup() {
 
 	fmtChanged := 0
 	ordChanged := 0
+	extractedTotal := 0
 	total := 0
 
 	for _, f := range allJournalFiles(true) {
@@ -1485,51 +1493,71 @@ func cmdCleanup() {
 			}
 			fmtChanged++
 			fmt.Printf("  → %s (formatting)\n", dateStr)
-			orig = fixed // use updated content for reorder check
+			orig = fixed // use updated content for the steps below
 		}
 
-		// ── reorder entries by timestamp ──────────────────────────────────
 		preamble := leadingPreamble(orig)
 		entries := parseEntries(orig)
-		if len(entries) < 2 {
-			continue
-		}
-		sorted := sortedByTimestamp(entries)
-		// Check if order changed
-		changed := false
-		for i := range entries {
-			if entries[i].ts != sorted[i].ts {
-				changed = true
-				break
+
+		// ── extract split-tagged entries to their tag files ───────────────
+		// Re-applies current JNL_SPLIT_TAGS routing retroactively: any entry
+		// in a date journal that now matches a configured tag is moved into
+		// <notesDir>/<tag>.md (first matching tag wins, same as fileDraft).
+		// Add a new split tag later, run cleanup, and matching history is
+		// pulled out automatically.
+		var kept []entry
+		extracted := 0
+		for _, e := range entries {
+			if _, path := splitTagTarget(e.raw); path == "" {
+				kept = append(kept, e)
+				continue
 			}
-		}
-		if changed {
-			var parts []string
-			if preamble != "" {
-				parts = append(parts, strings.TrimRight(preamble, "\n"))
+			label, err := fileDraft(e)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", dateStr, err)
+				kept = append(kept, e) // leave it in place on failure
+				continue
 			}
-			for _, e := range sorted {
-				header := "[" + e.ts + "]"
-				if e.suffix != "" {
-					header += " " + e.suffix
+			fmt.Printf("  → %s (extracted from %s)\n", label, dateStr)
+			extracted++
+		}
+
+		// ── reorder remaining entries by timestamp ────────────────────────
+		reordered := false
+		ordered := kept
+		if len(kept) >= 2 {
+			sorted := sortedByTimestamp(kept)
+			for i := range kept {
+				if kept[i].ts != sorted[i].ts {
+					reordered = true
+					break
 				}
-				parts = append(parts, header+"\n"+e.body)
 			}
-			if err := writeFile(f, strings.Join(parts, "\n\n")+"\n"); err != nil {
+			ordered = sorted
+		}
+
+		if extracted > 0 || reordered {
+			if err := writeFile(f, renderEntries(preamble, ordered)); err != nil {
 				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", dateStr, err)
 				continue
 			}
-			ordChanged++
-			fmt.Printf("  → %s (reordered)\n", dateStr)
+			extractedTotal += extracted
+			if reordered {
+				ordChanged++
+				fmt.Printf("  → %s (reordered)\n", dateStr)
+			}
 		}
 	}
 
 	fmt.Println()
-	if fmtChanged == 0 && ordChanged == 0 {
+	if fmtChanged == 0 && ordChanged == 0 && extractedTotal == 0 {
 		fmt.Printf("  All %d file(s) already clean.\n", total)
 	} else {
 		if fmtChanged > 0 {
 			fmt.Printf("  Formatting fixed:  %d file(s)\n", fmtChanged)
+		}
+		if extractedTotal > 0 {
+			fmt.Printf("  Entries extracted: %d (to split-tag files)\n", extractedTotal)
 		}
 		if ordChanged > 0 {
 			fmt.Printf("  Entries reordered: %d file(s)\n", ordChanged)
@@ -1595,7 +1623,8 @@ func cmdHelp() {
   jnl tags               all @tags with usage counts
   jnl tag <name>         all entries tagged @name
   jnl random             display a random past entry
-  jnl cleanup            standardise ... → … and smart quotes; reorder timestamps
+  jnl cleanup            standardise ... → … and smart quotes; reorder timestamps;
+                         extract split-tagged entries into their tag files
   jnl export [file]      combine all entries into one file (default: export.md)
   jnl open               open journal folder in file manager
   jnl config             open config file (~/.config/jnl/config) in editor
