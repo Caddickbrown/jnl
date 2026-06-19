@@ -279,7 +279,7 @@ func allJournalFiles(ascending bool) []string {
 
 // ── entry parsing ─────────────────────────────────────────────────────────────
 
-var entryHeaderRE = regexp.MustCompile(`^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\](.*)`)
+var entryHeaderRE = regexp.MustCompile(`^\[(\d{4}[-–]\d{2}[-–]\d{2}) (\d{2}:\d{2}:\d{2})\](.*)`)
 
 type entry struct {
 	date   string // YYYY-MM-DD
@@ -312,10 +312,15 @@ func parseEntries(content string) []entry {
 	for _, line := range strings.Split(content, "\n") {
 		if m := entryHeaderRE.FindStringSubmatch(line); m != nil {
 			flush()
-			curDate = m[1]
-			curTS = m[1] + " " + m[2]
+			curDate = strings.ReplaceAll(m[1], "–", "-")
+			curTS = curDate + " " + m[2]
 			curSuffix = strings.TrimSpace(m[3])
-			cur = []string{line}
+			// Normalize header to ASCII hyphens so raw always round-trips cleanly.
+			normHeader := "[" + curTS + "]"
+			if curSuffix != "" {
+				normHeader += " " + curSuffix
+			}
+			cur = []string{normHeader}
 		} else if curTS != "" {
 			cur = append(cur, line)
 		}
