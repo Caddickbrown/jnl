@@ -4,3 +4,4 @@ jnl-go
 *.exe
 jnl-linux-*
 jnl-macos-*
+.claude/settings.local.json
